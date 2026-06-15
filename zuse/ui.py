@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich import box
@@ -11,6 +12,7 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 if TYPE_CHECKING:
@@ -83,24 +85,19 @@ def _banner_text(lines: list[str]) -> Text:
 
 
 def _animate_intro(console: Console, lines: list[str]) -> None:
-    """Boot sequence: a scanning loader, then a left-to-right wipe reveal of
-    the banner. Plain ASCII, no gradient."""
-    boot = "initializing"
-    bar_w = 14
+    """Boot sequence: a braille spinner, then a left-to-right wipe-reveal of the logo."""
     try:
         with Live(console=console, refresh_per_second=60, transient=False) as live:
-            # 1. fill a scanner bar
-            for step in range(bar_w + 1):
-                bar = "█" * step + "░" * (bar_w - step)
-                live.update(
-                    Padding(Text.assemble(("  ", ""), (bar, "white"),
-                                          (f"  {boot}", GREY)), (1, 0, 1, 2))
-                )
-                time.sleep(0.022)
-            time.sleep(0.06)
-            # 2. wipe-reveal the banner
+            # 1. brief braille "initializing" spinner
+            for k in range(16):
+                frame = _BRAILLE_FRAMES[k % len(_BRAILLE_FRAMES)]
+                live.update(Padding(
+                    Text.assemble((frame, f"bold {CYAN}"), ("  initializing zuse", GREY)),
+                    (1, 0, 1, 2)))
+                time.sleep(0.035)
+            # 2. wipe-reveal the logo, left to right
             maxw = max(len(ln) for ln in lines)
-            for cut in range(0, maxw + 3, 2):
+            for cut in range(0, maxw + 3, 3):
                 t = Text()
                 for ln in lines:
                     t.append(ln[:cut] + "\n", style=BANNER_STYLE)
@@ -111,7 +108,12 @@ def _animate_intro(console: Console, lines: list[str]) -> None:
         console.print(Padding(_banner_text(lines), (1, 0, 0, 2)))
 
 
-def print_banner(console: Console, config, cwd: str, animate: bool = True) -> None:
+def print_banner(console: Console, config, cwd: str, animate: bool = True,
+                 mcp_servers: int = 0, context_limit: int | None = None) -> None:
+    import platform
+
+    from . import __version__
+
     art = BANNER_WIDE if console.width >= 80 else BANNER
     lines = art.strip("\n").splitlines()
     if animate and console.is_terminal:
@@ -120,50 +122,78 @@ def print_banner(console: Console, config, cwd: str, animate: bool = True) -> No
         console.print(Padding(_banner_text(lines), (1, 0, 0, 2)))
 
     console.print(
-        Padding(Text("the autonomous agent that learns", style=f"italic {GREY}"), (0, 0, 0, 2))
+        Padding(Text("the autonomous agent that learns", style=f"italic {GREY}"), (0, 0, 1, 3))
     )
 
-    _label = {
-        "ollama": ("● local", GREEN),
-        "anthropic": ("● anthropic", SKY),
-        "openai": ("● openai", GREEN),
-        "codex": ("● chatgpt", GREEN),
-    }.get(config.provider, ("● cloud", SKY))
-    model_line = Text.assemble(
-        ("model  ", GREY), (config.active_model, "bold white"), ("  ", ""), _label,
-    )
-    flags = []
+    provider_label = {
+        "ollama": "local (ollama)",
+        "anthropic": "anthropic",
+        "openai": "openai",
+        "codex": "chatgpt (codex)",
+    }.get(config.provider, config.provider)
+    provider_color = {
+        "ollama": GREEN, "anthropic": SKY, "openai": GREEN, "codex": GREEN,
+    }.get(config.provider, SKY)
+
+    home = str(Path.home())
+    cwd_disp = "~" + cwd[len(home):] if cwd.startswith(home) else cwd
+
+    def on_off(value: bool) -> tuple[str, str]:
+        return ("on", GREEN) if value else ("off", GREY)
+
     if config.auto:
-        flags.append("⚡ auto")
-    if config.learning:
-        flags.append("✦ learning")
-    import platform
+        mode = ("autonomous", AMBER)
+    elif config.yolo:
+        mode = ("yolo (auto-approve)", RED)
+    else:
+        mode = ("interactive", "white")
+
+    if not config.compact:
+        context = ("compaction off", GREY)
+    else:
+        threshold = context_limit or config.compact_threshold or (
+            5500 if config.is_local else 140000)
+        context = (f"~{threshold:,} tokens", FAINT)
+
+    rows: list[tuple[str, tuple[str, str]]] = [
+        ("provider", (provider_label, provider_color)),
+        ("model", (config.active_model, "bold white")),
+        ("directory", (cwd_disp, FAINT)),
+        ("mode", mode),
+        ("effort", (config.effort, FAINT)),
+        ("context limit", context),
+        ("thinking", on_off(config.thinking)),
+        ("learning", on_off(config.learning)),
+        ("web tools", on_off(config.enable_web)),
+        ("mcp servers", (str(mcp_servers) if mcp_servers else "none",
+                         GREEN if mcp_servers else GREY)),
+    ]
     if platform.system() == "Darwin":
-        flags.append("🍎 mac access")
-    if config.yolo and not config.auto:
-        flags.append("yolo")
-    meta_line = Text.assemble(
-        ("\n", ""),
-        (("  ·  ".join(flags)) + "\n", GREY),
-        ("cwd    ", GREY), (cwd, FAINT),
-    )
+        rows.append(("macOS control", ("available", GREEN)))
+
+    grid = Table.grid(padding=(0, 3))
+    grid.add_column(style=GREY, justify="right")
+    grid.add_column()
+    for label, (value, color) in rows:
+        grid.add_row(label, Text(value, style=color))
 
     panel = Panel(
-        Group(model_line, meta_line),
+        grid,
+        title=Text.assemble(("zuse  ", f"bold {CYAN}"), (f"v{__version__}", GREY)),
+        title_align="left",
         box=box.ROUNDED,
-        border_style="grey42",
-        padding=(0, 2),
+        border_style=INDIGO,
+        padding=(1, 3),
         expand=False,
     )
-
-    console.print(Padding(panel, (1, 0, 0, 2)))
+    console.print(Padding(panel, (0, 0, 0, 2)))
     console.print(
         Padding(
             Text.assemble(
-                ("type a request  ·  ", FAINT), ("/help", "bold white"),
-                (" for commands  ·  ", FAINT), ("/exit", "bold white"), (" to quit", FAINT),
+                ("type a request   ", FAINT), ("/help", f"bold {CYAN}"),
+                ("   ", FAINT), ("/exit", f"bold {CYAN}"),
             ),
-            (1, 0, 1, 2),
+            (1, 0, 1, 3),
         )
     )
 
@@ -229,7 +259,11 @@ class StreamView:
                 )
             )
         if self._text:
-            parts.append(Padding(Markdown(self._text), (0, 0, 0, 2)))
+            block = Group(
+                Text.assemble(("◆ ", CYAN), ("zuse", f"bold {CYAN}")),
+                Markdown(self._text, code_theme="monokai"),
+            )
+            parts.append(Padding(block, (1, 0, 0, 2)))
         if not parts:
             return _Pulse()
         return Group(*parts)
@@ -291,24 +325,27 @@ def render_tool_call(console: Console, name: str, summary: str) -> None:
     line.append(f"{icon} ", style=ACCENT)
     line.append(name, style="bold white")
     if summary:
-        line.append("  " + summary, style=GREY)
+        line.append("  " + summary, style=FAINT)
     console.print(line)
+
+
+RAIL = "#475569"  # soft slate for the tool-output gutter
 
 
 def render_tool_result(console: Console, result: str, is_error: bool = False) -> None:
     lines = result.splitlines() or ["(no output)"]
     shown = lines[:14]
-    bar = RED if is_error else "grey35"
+    bar = RED if is_error else RAIL
     txt = RED if is_error else "grey50"
     body = Text()
     for i, ln in enumerate(shown):
-        body.append("  ▏ ", style=bar)
+        body.append("    ▏ ", style=bar)
         body.append(ln, style=txt)
         if i < len(shown) - 1:
             body.append("\n")
     if len(lines) > 14:
         body.append("\n")
-        body.append("  ▏ ", style=bar)
+        body.append("    ▏ ", style=bar)
         body.append(f"… +{len(lines) - 14} more lines", style=FAINT)
     console.print(body)
 

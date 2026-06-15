@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
+import platform
 import sys
+import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 
 from rich.console import Console
@@ -21,6 +25,8 @@ HISTORY_FILE = CONFIG_DIR / "history"
 
 SLASH_HELP = [
     ("/help", "Show this command list"),
+    ("/doctor", "Check Zuse's local setup and optional capabilities"),
+    ("/selftest", "Run safe checks for Zuse's core local tools"),
     ("/clear", "Clear the conversation (keep settings)"),
     ("/undo", "Revert the last file change Zuse made"),
     ("/goal <text>", "Autonomous mode: work until the goal is achieved & verified"),
@@ -53,6 +59,151 @@ def _print_help(console: Console) -> None:
     console.print(table)
 
 
+def _check_ollama(cfg: Config) -> tuple[str, str]:
+    try:
+        from .providers.ollama_backend import OllamaBackend
+
+        models = OllamaBackend.list_models(cfg.ollama_host)
+    except Exception as e:  # noqa: BLE001
+        return "fail", f"not reachable at {cfg.ollama_host}: {e}"
+    if not models:
+        return "warn", "reachable, but no models installed"
+    if cfg.local_model not in models:
+        resolved = OllamaBackend.resolve_model(cfg.local_model, models)
+        return "warn", f"{len(models)} model(s); configured '{cfg.local_model}' resolves to '{resolved}'"
+    return "ok", f"{cfg.local_model} available ({len(models)} model(s))"
+
+
+def _run_doctor(agent: Agent, console: Console) -> None:
+    """Print a quick local health check for Zuse and its optional integrations."""
+    cfg = agent.config
+    rows = [
+        ("Python", "ok", platform.python_version()),
+        ("Config dir", "ok" if CONFIG_DIR.exists() else "warn", str(CONFIG_DIR)),
+        ("Provider", "ok", f"{cfg.provider} / {cfg.active_model}"),
+        ("Ollama", *_check_ollama(cfg)),
+        (
+            "Anthropic key",
+            "ok" if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") else "warn",
+            "set" if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") else "not set",
+        ),
+        (
+            "OpenAI key",
+            "ok" if os.environ.get("OPENAI_API_KEY") else "warn",
+            "set" if os.environ.get("OPENAI_API_KEY") else "not set",
+        ),
+        (
+            "macOS computer use",
+            "ok" if importlib.util.find_spec("Quartz") else "warn",
+            "Quartz installed" if importlib.util.find_spec("Quartz") else "install with pip install -e '.[mac]'",
+        ),
+        (
+            "Browser automation",
+            "ok" if importlib.util.find_spec("playwright") else "warn",
+            "Playwright installed" if importlib.util.find_spec("playwright") else "install with pip install -e '.[browser]'",
+        ),
+        ("MCP", "ok" if agent.mcp.servers else "warn", f"{len(agent.mcp.servers)} server(s) connected"),
+        ("Knowledge", "ok", f"{len(agent.knowledge.entries)} learned item(s)"),
+    ]
+
+    styles = {"ok": "#34D399", "warn": "#FBBF24", "fail": "#F87171"}
+    icons = {"ok": "✓", "warn": "!", "fail": "✗"}
+    table = Table(title="Zuse doctor", box=None, padding=(0, 2))
+    table.add_column("check", style="bold cyan")
+    table.add_column("status")
+    table.add_column("details", style="white")
+    for name, status, detail in rows:
+        table.add_row(name, f"[{styles[status]}]{icons[status]} {status}[/]", detail)
+    console.print(table)
+
+
+def _run_selftest(agent: Agent, console: Console) -> bool:
+    """Exercise safe local tool paths without calling a model or external services."""
+    from .tools import ToolContext, build_registry, default_tools
+
+    registry = build_registry(default_tools())
+    rows: list[tuple[str, str, str]] = []
+
+    def record(name: str, ok: bool, detail: str) -> None:
+        rows.append((name, "ok" if ok else "fail", detail))
+
+    with tempfile.TemporaryDirectory(prefix="zuse-selftest-") as tmp:
+        tmp_path = Path(tmp)
+        base_ctx = agent.ctx
+        ctx = ToolContext(
+            cwd=tmp_path,
+            console=base_ctx.console,
+            permissions=base_ctx.permissions,
+            config=base_ctx.config,
+            knowledge=base_ctx.knowledge,
+            shell=base_ctx.shell,
+            background=base_ctx.background,
+            journal=None,
+            browser=base_ctx.browser,
+            spawn_subagent=base_ctx.spawn_subagent,
+        )
+
+        checks = [
+            ("write_file", {"path": "sample.txt", "content": "hello zuse\n"}, "Created"),
+            ("read_file", {"path": "sample.txt"}, "hello zuse"),
+            (
+                "edit_file",
+                {"path": "sample.txt", "old_string": "hello", "new_string": "hi"},
+                "Edited",
+            ),
+            ("list_directory", {"path": "."}, "sample.txt"),
+            ("glob", {"pattern": "*.txt", "path": "."}, "sample.txt"),
+            ("grep", {"pattern": "hi", "path": ".", "glob": "*.txt"}, "sample.txt"),
+            ("python", {"code": "print(2 + 3)", "timeout": 10}, "5"),
+            ("bash", {"command": f"cd {tmp_path} && pwd", "timeout": 10}, str(tmp_path)),
+            (
+                "todo_write",
+                {"items": [{"text": "selftest", "status": "in_progress"}]},
+                "Task list updated",
+            ),
+        ]
+
+        for tool_name, args, expected in checks:
+            try:
+                out = registry[tool_name].run(args, ctx)
+                text = out.text if hasattr(out, "text") else str(out)
+                record(tool_name, expected in text, text.splitlines()[0][:120])
+            except Exception as e:  # noqa: BLE001
+                record(tool_name, False, f"{type(e).__name__}: {e}")
+
+        bg_id = ""
+        try:
+            bg_out = registry["run_background"].run({"command": "printf ready; sleep 0.1"}, ctx)
+            bg_id = bg_out.split()[3].rstrip(":")
+            import time
+
+            time.sleep(0.2)
+            logs = registry["bg_logs"].run({"task_id": bg_id, "lines": 5}, ctx)
+            record("background", "ready" in logs, logs or bg_out)
+        except Exception as e:  # noqa: BLE001
+            record("background", False, f"{type(e).__name__}: {e}")
+        finally:
+            if bg_id:
+                try:
+                    registry["bg_stop"].run({"task_id": bg_id}, ctx)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    styles = {"ok": "#34D399", "fail": "#F87171"}
+    icons = {"ok": "✓", "fail": "✗"}
+    table = Table(title="Zuse selftest", box=None, padding=(0, 2))
+    table.add_column("tool", style="bold cyan")
+    table.add_column("status")
+    table.add_column("details", style="white")
+    for name, status, detail in rows:
+        table.add_row(name, f"[{styles[status]}]{icons[status]} {status}[/]", detail)
+    console.print(table)
+
+    passed = sum(1 for _, status, _ in rows if status == "ok")
+    console.print(f"[#34D399]{passed}[/]/{len(rows)} checks passed")
+    return passed == len(rows)
+
+
 def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
     """Return True to keep the REPL running, False to exit."""
     parts = cmd.strip().split(maxsplit=1)
@@ -65,6 +216,10 @@ def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
 
     if name == "/help":
         _print_help(console)
+    elif name == "/doctor":
+        _run_doctor(agent, console)
+    elif name == "/selftest":
+        _run_selftest(agent, console)
     elif name == "/clear":
         agent.backend.clear()
         agent.permissions.reset_session()
@@ -230,19 +385,29 @@ def _make_session():
 
 
 def _read_input(session, console: Console) -> str | None:
-    if session is not None:
+    # prompt_toolkit runs its own asyncio loop via asyncio.run(), which raises
+    # "cannot be called from a running event loop" if one is already running in
+    # this thread. Playwright's sync API keeps an event loop alive in the main
+    # thread for as long as a browser session is open, so once a browser tool has
+    # been used, fall back to builtin input() (which needs no event loop).
+    import asyncio
+
+    loop_running = False
+    try:
+        asyncio.get_running_loop()
+        loop_running = True
+    except RuntimeError:
+        pass
+
+    if session is not None and not loop_running:
         try:
             from prompt_toolkit.formatted_text import FormattedText
 
-            prompt = FormattedText([("class:arrow", "\n❯ ")])
-            return session.prompt(prompt)
+            return session.prompt(FormattedText([("class:arrow", "\n❯ ")]))
         except (EOFError, KeyboardInterrupt):
             return None
-        except Exception:  # noqa: BLE001 — fall back to a plain prompt
-            try:
-                return session.prompt("\n❯ ")
-            except (EOFError, KeyboardInterrupt):
-                return None
+        except Exception:  # noqa: BLE001 — fall back to a plain prompt below
+            pass
     try:
         return console.input("\n[bold #22d3ee]❯ [/]")
     except (EOFError, KeyboardInterrupt):
@@ -250,7 +415,8 @@ def _read_input(session, console: Console) -> str | None:
 
 
 def run_repl(agent: Agent, console: Console) -> None:
-    ui.print_banner(console, agent.config, str(Path.cwd()))
+    ui.print_banner(console, agent.config, str(Path.cwd()),
+                    mcp_servers=len(agent.mcp.servers), context_limit=agent._compact_threshold())
     if agent.project:
         console.print(f"  [grey42]📋 loaded project instructions ({len(agent.project)} chars)[/]")
     session = _make_session()
@@ -377,6 +543,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--ollama-host", help="Ollama base URL (default http://localhost:11434).")
     p.add_argument("--openai-base-url", help="OpenAI-compatible base URL (default OpenAI).")
     p.add_argument("--list-models", action="store_true", help="List local Ollama models and exit.")
+    p.add_argument("--doctor", action="store_true", help="Check Zuse's local setup and optional capabilities, then exit.")
+    p.add_argument("--selftest", action="store_true", help="Run safe checks for Zuse's core local tools, then exit.")
     p.add_argument("-e", "--effort", choices=["low", "medium", "high", "xhigh", "max"])
     p.add_argument("--auto", action="store_true",
                    help="Autonomous mode: act decisively and auto-approve actions.")
@@ -455,6 +623,40 @@ def main(argv: list[str] | None = None) -> int:
             cfg.codex_model = args.model
         else:
             cfg.model = resolve_model(args.model)
+
+    if args.doctor:
+        doctor_agent = SimpleNamespace(
+            config=cfg,
+            mcp=SimpleNamespace(servers=[]),
+            knowledge=SimpleNamespace(entries=[]),
+        )
+        _run_doctor(doctor_agent, console)  # type: ignore[arg-type]
+        return 0
+
+    if args.selftest:
+        cfg.yolo = True
+        from .journal import EditJournal
+        from .knowledge import KnowledgeStore
+        from .shell import BackgroundManager, ShellSession
+        from .tools import ToolContext
+
+        selftest_agent = SimpleNamespace(
+            ctx=ToolContext(
+                cwd=Path.cwd(),
+                console=console,
+                permissions=SimpleNamespace(yolo=True),
+                config=cfg,
+                knowledge=KnowledgeStore(CONFIG_DIR / "selftest-knowledge.jsonl"),
+                shell=ShellSession(Path.cwd()),
+                background=BackgroundManager(CONFIG_DIR / "selftest-bg"),
+                journal=EditJournal(),
+            )
+        )
+        try:
+            return 0 if _run_selftest(selftest_agent, console) else 1  # type: ignore[arg-type]
+        finally:
+            selftest_agent.ctx.shell.kill()
+            selftest_agent.ctx.background.shutdown()
 
     factory = _setup_backend(cfg, console)
     if factory is None:

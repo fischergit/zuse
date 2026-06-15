@@ -19,6 +19,8 @@ dependencies = [
 
 [project.scripts]
 zuse = "zuse.cli:main"
+zuse-whatsapp = "zuse.whatsapp:main"
+zuse-telegram = "zuse.telegram:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]
@@ -26,6 +28,9 @@ dev = ["pytest>=8.0", "ruff>=0.6"]
 mac = ["pyobjc-framework-Quartz>=10.0"]
 # Browser automation. After install run: python -m playwright install chromium
 browser = ["playwright>=1.40"]
+# WhatsApp bridges. QR mode uses Node/WPPConnect at runtime; Cloud mode needs FastAPI.
+# Install with: pip install -e ".[whatsapp]"
+whatsapp = ["fastapi>=0.110", "uvicorn>=0.27"]
 
 [tool.setuptools.packages.find]
 include = ["zuse*"]

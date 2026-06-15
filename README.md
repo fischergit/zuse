@@ -118,6 +118,8 @@ zuse --local          # force local Ollama
 One-shot (non-interactive):
 
 ```bash
+zuse --doctor            # check local setup, keys, Ollama, mac/browser extras
+zuse --selftest          # safely exercise core local tools without calling a model
 zuse --local --no-thinking "summarize what this project does and list its files"
 zuse -m sonnet -e medium "refactor utils.py for readability"
 zuse --local -m qwen2.5-coder --yolo "run the test suite and fix any failures"
@@ -128,6 +130,8 @@ zuse --local -m qwen2.5-coder --yolo "run the test suite and fix any failures"
 | Command | Description |
 |---|---|
 | `/help` | List commands |
+| `/doctor` | Check Zuse's local setup and optional capabilities |
+| `/selftest` | Run safe checks for Zuse's core local tools |
 | `/clear` | Clear the conversation |
 | `/model <name>` | Switch model (`opus`, `sonnet`, `haiku`, `fable`) |
 | `/effort <level>` | `low \| medium \| high \| xhigh \| max` |
@@ -188,6 +192,101 @@ No config file → no MCP overhead. Add `"disabled": true` to a server to skip i
 Settings persist in `~/.zuse/config.json` (provider, model, effort, thinking,
 learning, web access, persona). Environment overrides: `ANTHROPIC_API_KEY`,
 `ZUSE_MODEL`, `ZUSE_HOME`, `OLLAMA_HOST`.
+
+## WhatsApp bridge
+
+Zuse has two WhatsApp modes.
+
+### QR setup assistant (OpenClaw-style)
+
+This is the easiest mode: start the assistant, scan a QR code with WhatsApp, then
+chat with Zuse. It uses WhatsApp Web via WPPConnect, so Node.js/npm must be
+installed.
+
+```bash
+cd /Users/nik/agent
+source .venv/bin/activate
+pip install -e ".[whatsapp]"
+
+zuse-whatsapp --mode qr --provider codex --auto
+# or local:
+zuse-whatsapp --mode qr --local --auto
+```
+
+The assistant prints a QR code in the terminal. On your phone: WhatsApp → Settings
+/ Menü → Linked devices / Verknüpfte Geräte → Link a device / Gerät verknüpfen →
+scan the QR code. Zuse stores the WhatsApp-Web session under
+`~/.zuse/whatsapp-web-bridge`, so you usually only scan once.
+
+QR mode keeps one persistent Zuse agent in the Python process. WhatsApp messages
+and local terminal input share the same conversation, tools, shell session,
+background tasks, memory, and Mac access. After the QR bridge starts, type into the
+terminal prompt `lokal ❯` to intervene in the exact same session; use `/clear`,
+`/cost`, or `/quit`. Add `--no-local-input` if you only want WhatsApp.
+
+Optional allow-list:
+
+```bash
+zuse-whatsapp --mode qr --allowed-sender 491701234567 --provider codex --auto
+```
+
+Use `--yolo` only if WhatsApp messages should auto-approve tool actions on this Mac.
+
+### Meta Cloud API webhook
+
+For a production-style official Meta webhook:
+
+```bash
+export ZUSE_WHATSAPP_VERIFY_TOKEN="choose-a-long-random-token"
+export WHATSAPP_ACCESS_TOKEN="EAAG..."
+export WHATSAPP_PHONE_NUMBER_ID="1234567890"
+export WHATSAPP_APP_SECRET="..."               # optional but recommended
+export ZUSE_WHATSAPP_ALLOWED_SENDERS="491701234567"  # optional allow-list
+
+zuse-whatsapp --mode cloud --provider codex --auto
+```
+
+The Cloud API endpoint is `http://127.0.0.1:8787/webhook/whatsapp`. For local testing
+with Meta, expose it with `ngrok http 8787`, then configure Meta's callback URL to
+`https://<ngrok-domain>/webhook/whatsapp` and use the same verify token as
+`ZUSE_WHATSAPP_VERIFY_TOKEN`.
+
+## Telegram bot
+
+Telegram is simpler than WhatsApp for a personal bot because you can use the same
+Telegram account to create a bot with @BotFather and then chat with that bot.
+
+```bash
+cd /Users/nik/agent
+source .venv/bin/activate
+pip install -e .
+
+# 1) In Telegram: write /newbot to @BotFather and copy the token.
+export TELEGRAM_BOT_TOKEN="123456:ABC..."
+
+# 2) Start Zuse as Telegram bot.
+zuse-telegram --provider codex --auto
+# or local:
+zuse-telegram --local --auto
+```
+
+After the first message, the terminal prints the Telegram chat ID. To restrict the
+bot to only your chat, restart with one of these:
+
+```bash
+zuse-telegram --allowed-chat-id 123456789 --provider codex --auto
+# or:
+export ZUSE_TELEGRAM_ALLOWED_CHAT_IDS="123456789"
+zuse-telegram --provider codex --auto
+```
+
+Like WhatsApp QR mode, Telegram keeps one persistent Zuse agent in the Python
+process. Telegram messages and local terminal input share the same conversation,
+tools, shell session, background tasks, memory, and Mac access. Use `/clear`,
+`/cost`, or `/quit` in the local terminal prompt. Add `--no-local-input` if you
+only want Telegram.
+
+Use `--yolo` only if Telegram messages should auto-approve tool actions on this Mac.
 
 ## Architecture
 

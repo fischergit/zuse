@@ -34,6 +34,9 @@ class CodexBackend(Backend):
 
     # -- history (Responses input items) -----------------------------------
 
+    def context_window(self) -> int | None:
+        return 272_000  # gpt-5.x Codex models report a 272k window
+
     def add_user(self, text: str) -> None:
         self.messages.append({
             "type": "message", "role": "user",

@@ -34,6 +34,16 @@ class OpenAIBackend(Backend):
 
     # -- history -----------------------------------------------------------
 
+    def context_window(self) -> int | None:
+        m = self.model.lower()
+        if m.startswith(("gpt-4.1", "o3", "o4")):
+            return 1_000_000 if m.startswith("gpt-4.1") else 200_000
+        if m.startswith(("gpt-5", "o1")):
+            return 200_000
+        if m.startswith(("gpt-4o", "gpt-4-turbo", "chatgpt-4o")):
+            return 128_000
+        return 128_000  # safe default for unknown OpenAI-compatible models
+
     def add_user(self, text: str) -> None:
         self.messages.append({"role": "user", "content": text})
 

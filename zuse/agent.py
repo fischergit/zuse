@@ -171,6 +171,10 @@ class Agent:
     def _compact_threshold(self) -> int:
         if self.config.compact_threshold > 0:
             return self.config.compact_threshold
+        window = self.backend.context_window()
+        if window:
+            # Leave ~20% headroom for the response and the summary pass.
+            return int(window * 0.8)
         return 5500 if self.config.is_local else 140000
 
     def _maybe_compact(self) -> None:
@@ -197,7 +201,7 @@ class Agent:
 
     # -- main turn ---------------------------------------------------------
 
-    def run_turn(self, user_input: str) -> None:
+    def run_turn(self, user_input: str) -> str:
         self._maybe_compact()
         recalled = self.knowledge.recall(
             user_input, k=self.config.recall_k, kinds=("fact", "procedure")
@@ -212,6 +216,7 @@ class Agent:
         self.backend.add_user(augmented)
         text, tools_used = self._agent_loop()
         self._reflect(user_input, [text] if text else [], tools_used)
+        return text
 
     def _agent_loop(self) -> tuple[str, list[str]]:
         """Run the model→tools loop until the assistant stops calling tools.

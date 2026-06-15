@@ -67,6 +67,11 @@ class Backend(ABC):
     def clear(self) -> None:
         self.messages = []
 
+    def context_window(self) -> int | None:
+        """The active model's input context window in tokens, or None if unknown.
+        Used to size the auto-compaction threshold."""
+        return None
+
     # -- generation --------------------------------------------------------
 
     @abstractmethod

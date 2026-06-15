@@ -38,6 +38,9 @@ class AnthropicBackend(Backend):
 
     # -- history -----------------------------------------------------------
 
+    def context_window(self) -> int | None:
+        return 1_000_000  # Claude 4.x models (opus/sonnet) provide a 1M window
+
     def add_user(self, text: str) -> None:
         self.messages.append({"role": "user", "content": text})
 
