@@ -1,5 +1,9 @@
 # Zuse
 
+<p align="center">
+  <img src="assets/zuse-logo.png" alt="Zuse logo" width="420">
+</p>
+
 An autonomous terminal AI agent — in the spirit of agents like OpenClaw and
 Hermes. Zuse completes tasks end to end: it reads and edits files, runs shell
 commands and Python, searches the web, plans with a todo list, spawns sub-agents,
