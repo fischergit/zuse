@@ -219,6 +219,10 @@ HTML = r"""
     .rate-top { display:flex; justify-content:space-between; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
     .rate-bar { height: 7px; border: 1px solid var(--line); background: #eef2f7; border-radius: 999px; overflow: hidden; }
     .rate-fill { height: 100%; width: 0%; background: #111827; }
+.rate-row.warn .rate-fill { background: #d97706; }
+.rate-row.danger .rate-fill { background: #dc2626; }
+.rate-row.warn .rate-top { color: #92400e; }
+.rate-row.danger .rate-top { color: #991b1b; }
     .rate-empty { color: var(--muted); font-size: 12px; line-height: 1.45; }
     .quick-grid { display:grid; grid-template-columns: 1fr; gap: 7px; }
     .quick {
@@ -457,7 +461,8 @@ HTML = r"""
       const remaining = l.remaining == null ? '?' : l.remaining;
       const limit = l.limit == null ? '?' : l.limit;
       const reset = l.reset_seconds == null ? '' : ` · reset ${l.reset_seconds}s`;
-      return `<div class="rate-row"><div class="rate-top"><span>${esc(l.name)}</span><span>${used}% used · ${remaining}/${limit}${reset}</span></div><div class="rate-bar"><div class="rate-fill" style="width:${used}%"></div></div></div>`;
+      const cls = used >= 90 ? 'danger' : used >= 80 ? 'warn' : '';
+      return `<div class="rate-row ${cls}"><div class="rate-top"><span>${esc(l.name)}</span><span>${used}% used · ${remaining}/${limit}${reset}</span></div><div class="rate-bar"><div class="rate-fill" style="width:${used}%"></div></div></div>`;
     }).join('');
   }
   function addMessage(kind, text) {

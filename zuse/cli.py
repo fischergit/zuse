@@ -42,7 +42,7 @@ SLASH_HELP = [
     ("/mcp", "Show connected MCP servers and their tools"),
     ("/cost", "Show token usage and estimated cost"),
     ("/ratelimit", "Show Codex rate-limit usage when available"),
-    ("/memory", "Show learned knowledge"),
+    ("/memory [dedupe|compact]", "Show or clean learned knowledge"),
     ("/forget", "Clear all learned knowledge"),
     ("/system", "Show the active system prompt"),
     ("/save <name>", "Save the current conversation"),
@@ -141,6 +141,42 @@ def _format_reset(seconds: int | None) -> str:
         return f"{minutes}m {sec}s"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h {minutes}m"
+
+
+def _rate_limit_summary(agent: Agent) -> str:
+    status = _codex_rate_limit_status(agent)
+    if status is None:
+        return "rate-limit: n/a"
+    if status.get("error"):
+        return "rate-limit: error"
+    limits = status.get("limits") or []
+    if not limits:
+        return "rate-limit: waiting"
+    chunks = []
+    for limit in limits[:3]:
+        name = str(limit.get("name") or "requests")
+        used = limit.get("used_percent")
+        remaining = limit.get("remaining")
+        total = limit.get("limit")
+        used_text = "?%" if used is None else f"{int(round(max(0, min(100, used))))}%"
+        if remaining is not None and total is not None:
+            chunks.append(f"{name} {used_text} ({remaining}/{total})")
+        else:
+            chunks.append(f"{name} {used_text}")
+    return "rate-limit: " + " · ".join(chunks)
+
+
+def _render_rate_limit_warning(agent: Agent, console: Console, threshold: int = 80) -> None:
+    status = _codex_rate_limit_status(agent)
+    if not status or status.get("error"):
+        return
+    warnings = []
+    for limit in status.get("limits") or []:
+        used = limit.get("used_percent")
+        if used is not None and used >= threshold:
+            warnings.append(f"{limit.get('name') or 'requests'} {int(round(used))}%")
+    if warnings:
+        console.print(f"[#FBBF24]Codex rate-limit warning:[/] {' · '.join(warnings)} used")
 
 
 def _render_rate_limits(agent: Agent, console: Console) -> None:
@@ -386,7 +422,21 @@ def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
         _render_rate_limits(agent, console)
     elif name == "/memory":
         store = agent.knowledge
-        if not store.entries:
+        if arg in {"dedupe", "dedup"}:
+            removed = store.dedupe()
+            agent.refresh_system()
+            console.print(f"[green]Memory dedupe complete:[/] removed {removed} duplicate item(s).")
+        elif arg in {"compact", "compress"}:
+            compacted = store.compact_preferences()
+            deduped = store.dedupe()
+            agent.refresh_system()
+            console.print(
+                f"[green]Memory compact complete:[/] compacted preferences, "
+                f"removed {compacted + deduped} noisy/duplicate item(s)."
+            )
+        elif arg:
+            console.print("Usage: /memory [dedupe|compact]")
+        elif not store.entries:
             console.print("[dim](nothing learned yet — Zuse learns as you work)[/]")
         else:
             s = store.stats()
@@ -396,9 +446,19 @@ def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
                 f"{s.get('procedure', 0)} proc"
             )
             kind_style = {"preference": "cyan", "fact": "white", "procedure": "green"}
-            for e in store.entries[-40:]:
-                tag = kind_style.get(e.kind, "white")
-                console.print(f"  [{tag}]{e.kind[:4]}[/] {e.text}  [dim]({e.created})[/]")
+            for kind, title in (
+                ("preference", "Preferences"),
+                ("fact", "Facts"),
+                ("procedure", "Procedures"),
+            ):
+                entries = [e for e in store.entries if e.kind == kind]
+                if not entries:
+                    continue
+                console.print(f"\n[bold]{title}[/]")
+                tag = kind_style.get(kind, "white")
+                for e in entries[-20:]:
+                    uses = f", uses {e.uses}" if e.uses else ""
+                    console.print(f"  [{tag}]{kind[:4]}[/] {e.text}  [dim]({e.created}{uses})[/]")
     elif name == "/forget":
         n = agent.knowledge.clear()
         agent.refresh_system()
@@ -440,15 +500,18 @@ def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
     return True
 
 
-def _make_session():
+def _make_session(agent: Agent | None = None):
     try:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.styles import Style
 
         ensure_dirs()
-        style = Style.from_dict({"arrow": "#22d3ee bold", "": "#e5e7eb"})
-        return PromptSession(history=FileHistory(str(HISTORY_FILE)), style=style)
+        style = Style.from_dict({"arrow": "#22d3ee bold", "toolbar": "#6b7280", "": "#e5e7eb"})
+        kwargs = {}
+        if agent is not None:
+            kwargs["bottom_toolbar"] = lambda: [("class:toolbar", _rate_limit_summary(agent))]
+        return PromptSession(history=FileHistory(str(HISTORY_FILE)), style=style, **kwargs)
     except Exception:  # noqa: BLE001
         return None
 
@@ -488,7 +551,7 @@ def run_repl(agent: Agent, console: Console) -> None:
                     mcp_servers=len(agent.mcp.servers), context_limit=agent._compact_threshold())
     if agent.project:
         console.print(f"  [grey42]📋 loaded project instructions ({len(agent.project)} chars)[/]")
-    session = _make_session()
+    session = _make_session(agent)
     while True:
         text = _read_input(session, console)
         if text is None:
@@ -502,6 +565,7 @@ def run_repl(agent: Agent, console: Console) -> None:
             continue
         try:
             agent.run_turn(text)
+            _render_rate_limit_warning(agent, console)
         except KeyboardInterrupt:
             console.print("\n[#FBBF24]interrupted[/]")
         except Exception as e:  # noqa: BLE001
@@ -739,6 +803,7 @@ def main(argv: list[str] | None = None) -> int:
         prompt = " ".join(args.prompt)
         try:
             agent.run_turn(prompt)
+            _render_rate_limit_warning(agent, console)
         except KeyboardInterrupt:
             console.print("\n[#FBBF24]interrupted[/]")
             agent.shutdown()

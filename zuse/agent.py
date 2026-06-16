@@ -112,6 +112,7 @@ class Agent:
         self.journal = EditJournal()
         self.browser = BrowserManager(headless=config.browser_headless)
         self._last_ctx = 0  # approx input tokens of the last request, for compaction
+        self._turn_memory = ""  # internal recalled facts/procedures for the active turn
         self.stream_view_factory = None  # optional callable(console, markdown, show_thinking) -> StreamSink
         self.ctx = ToolContext(
             cwd=Path.cwd(),
@@ -207,15 +208,19 @@ class Agent:
         recalled = self.knowledge.recall(
             user_input, k=self.config.recall_k, kinds=("fact", "procedure")
         )
+        self._turn_memory = ""
         if recalled:
-            mem = "\n".join(f"- {e.text}" for e in recalled)
             ui.render_recall(self.console, len(recalled))
-            augmented = f"<memory>\n{mem}\n</memory>\n\n{user_input}"
-        else:
-            augmented = user_input
+            self._turn_memory = "\n".join(f"- {e.text}" for e in recalled)
 
-        self.backend.add_user(augmented)
-        text, tools_used = self._agent_loop()
+        if recalled and self.config.inject_recalled_memory:
+            self.backend.add_user(f"<memory>\n{self._turn_memory}\n</memory>\n\n{user_input}")
+        else:
+            self.backend.add_user(user_input)
+        try:
+            text, tools_used = self._agent_loop()
+        finally:
+            self._turn_memory = ""
         self._reflect(user_input, [text] if text else [], tools_used)
         return text
 
@@ -233,7 +238,15 @@ class Agent:
                 markdown=self.config.stream_markdown,
                 show_thinking=self.config.show_thinking,
             ) as view:
-                result = self.backend.generate(self.system, tools, view)
+                system = self.system
+                if getattr(self, "_turn_memory", ""):
+                    system += (
+                        "\n\n# Recalled relevant knowledge for this turn\n"
+                        "Use this internal context when applicable, but do not "
+                        "quote or display it unless it directly helps the user:\n"
+                        + self._turn_memory
+                    )
+                result = self.backend.generate(system, tools, view)
             self.usage.add(result.usage)
             self._last_ctx = _ctx_tokens(result.usage)
             self.backend.add_assistant(result)
@@ -259,9 +272,11 @@ class Agent:
         across rounds until the goal is achieved, blocked, or rounds run out."""
         ui.render_goal_header(self.console, goal)
         recalled = self.knowledge.recall(goal, k=self.config.recall_k, kinds=("fact", "procedure"))
-        mem = ("\n<memory>\n" + "\n".join(f"- {e.text}" for e in recalled) + "\n</memory>"
-               if recalled else "")
-        message = _GOAL_DIRECTIVE.format(goal=goal) + mem
+        self._turn_memory = ""
+        if recalled:
+            ui.render_recall(self.console, len(recalled))
+            self._turn_memory = "\n".join(f"- {e.text}" for e in recalled)
+        message = _GOAL_DIRECTIVE.format(goal=goal)
         all_tools: list[str] = []
         outcome = "incomplete"
 
@@ -284,6 +299,7 @@ class Agent:
                 "(run it or its tests). Emit <<GOAL_ACHIEVED>> when truly complete, or "
                 "<<BLOCKED>> with a reason if you cannot proceed without the user."
             )
+        self._turn_memory = ""
         ui.render_goal_result(self.console, outcome)
         self._reflect(f"[goal] {goal}", [], all_tools)
 

@@ -35,29 +35,37 @@ ASSISTANT_STYLE = "white"
 THINKING_STYLE = "grey50"
 BANNER_STYLE = "bold white"
 
-# Wide slanted logo (rebuilt from the brand mark) — used on wide terminals.
+# Wide logo — used on wide terminals.
 BANNER_WIDE = """
-   +&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
-  &&&&&
-&&$  &&&&&&&&&&&&&&&   &&&          &&&   &&&&&&&&&&&&&&&   &&&&&&&&&&&&&&&
-&&x            &$&$&&  &&&          &&$  &&&               x&&
-&&;           &&&&&&   &&&          &&&  &&&               &&&
-&&+      &&&&&&&       &&$          &&$   &&&&&&&&&&&&&&&  &&&&&&&&&&&&&&&&
-&&;  +&&&&             &&$          &&&                x&  $&x
-&&&  $&&&&&&&&&&&&&&&   &&&&&&&&&&&&&&   &&&&&&&&&&&&&&&&  &&&&&&&&&&&&&&&&
- &&&
-   &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+                @   @@   @@   @@
+
+  @@            @@  @@   @@   @@
+                @             @
+  ==            @    @   @@   @
+                @@  @@   @@   @@      @@
+  +=     @@
+  ==            @@  @@   @@   @@      ==
+         @@                            =           @@@@@@@@    @@    @@     @@@@@@     @@@@@@
+  ==            @   @@   @@   @       +=               @@      @@    @@    @@         @     @@
+                @   @@   @@   @@      ==              @@       @@    @@      @@@@@   @@@@@@@@@
+  ==                                                @@         @@    @@          @    @
+  +=         @  @@  @@   @@   @@                   @@@@@@@@     @@@@@@@    @@@@@@@     @@@@@@
+
+@@ @@ @@ @@ @@ @@ @ @@ @@@@ @@ @@ @@ @@ @@
+          @@   @    @@    @@    @@
+       @@    @@             @      @@
+    @@      @       @@       @        @
+ @@                  @                  @@
+           @                   @
 """
 
 # Compact block logo — fallback on narrow terminals.
 BANNER = r"""
-           ▄▄   ▄▄    ▄▄▄▄
- ███████╗ ██╗   ██╗ ███████╗ ███████╗
- ╚══███╔╝ ██║   ██║ ██╔════╝ ██╔════╝
-   ███╔╝  ██║   ██║ ███████╗ █████╗
-  ███╔╝   ██║   ██║ ╚════██║ ██╔══╝
- ███████╗ ╚██████╔╝ ███████║ ███████╗
- ╚══════╝  ╚═════╝  ╚══════╝ ╚══════╝
+ @@@@@@@@    @@    @@     @@@@@@     @@@@@@
+      @@      @@    @@    @@         @     @@
+     @@       @@    @@      @@@@@   @@@@@@@@@
+   @@         @@    @@          @    @
+ @@@@@@@@     @@@@@@@    @@@@@@@     @@@@@@
 """
 
 TOOL_ICONS = {
@@ -238,8 +246,15 @@ class StreamView:
 
     def __enter__(self) -> "StreamView":
         if self.markdown:
-            self._live = Live(console=self.console, refresh_per_second=20,
-                              vertical_overflow="visible")
+            # Keep the live area transient and print the final answer once on exit.
+            # Some terminals/log sinks don't reliably erase tall live renderables;
+            # without this, each refresh can leave another "◆ zuse" block behind.
+            self._live = Live(
+                console=self.console,
+                refresh_per_second=20,
+                vertical_overflow="ellipsis",
+                transient=True,
+            )
             self._live.__enter__()
             self._live.update(_Pulse())  # animate until the first token arrives
         return self
@@ -295,8 +310,15 @@ class StreamView:
 
     def __exit__(self, *exc) -> None:
         if self._live:
-            self._refresh(force=True)
             self._live.__exit__(*exc)
+            if self._text:
+                self.console.print(Padding(
+                    Group(
+                        Text.assemble(("◆ ", CYAN), ("zuse", f"bold {CYAN}")),
+                        Markdown(self._text, code_theme="monokai"),
+                    ),
+                    (1, 0, 0, 2),
+                ))
         else:
             self.console.print()
 

@@ -101,6 +101,7 @@ class Config:
     learning: bool = True            # reflect after each turn and grow knowledge
     embed_model: str = ""            # optional Ollama embedding model for semantic recall
     recall_k: int = 6                # how many memories to recall per turn
+    inject_recalled_memory: bool = False  # keep recall internal; don't add <memory> blocks to chat
     compact: bool = True             # auto-summarize history when context grows large
     compact_threshold: int = 0       # input-token trigger (0 = auto per provider)
     browser_headless: bool = True    # run the automation browser without a visible window
@@ -188,9 +189,10 @@ Use these to genuinely operate the machine, not just suggest steps."""
     base += """
 
 # Continuous learning
-You improve over time. Relevant things you've learned appear in a <memory> block \
-before some requests — read it and honor it (e.g. if a preference there says to \
-answer in a certain language or style, do exactly that). \
+You improve over time by using persisted knowledge from earlier sessions. User \
+preferences are included as standing instructions in this system prompt. Other \
+relevant facts and procedures may be recalled internally for each task; use them \
+when applicable, but don't repeat them to the user unless useful. \
 Whenever the user states a preference, gives you a standing instruction, or asks \
 you to remember something, call the `remember` tool right away — actually invoke \
 it, don't just acknowledge it in words. Also save durable facts about their \

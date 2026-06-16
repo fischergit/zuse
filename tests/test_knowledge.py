@@ -33,3 +33,33 @@ def test_invalid_kind_falls_back_to_fact(tmp_path):
 
     assert entry is not None
     assert entry.kind == "fact"
+
+
+def test_dedupe_merges_similar_entries_and_persists(tmp_path):
+    path = tmp_path / "knowledge.jsonl"
+    store = KnowledgeStore(path)
+    store.add("preference", "Prefers communication in German.")
+    store.add("preference", "Prefers German for communication.")
+
+    removed = store.dedupe()
+
+    assert removed == 1
+    assert len(store.entries) == 1
+    assert store.entries[0].uses == 1
+    reloaded = KnowledgeStore(path)
+    assert len(reloaded.entries) == 1
+
+
+def test_compact_preferences_canonicalizes_common_noise(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.jsonl")
+    store.add("preference", "Prefers communication in German.")
+    store.add("preference", "Bevorzugt Antworten auf Deutsch.")
+    store.add("fact", "Zuse project is located at /Users/nik/agent.")
+
+    removed = store.compact_preferences()
+
+    assert removed == 1
+    assert [e.text for e in store.preferences()] == [
+        "Bevorzugt Antworten und Projektkommunikation auf Deutsch."
+    ]
+    assert any(e.kind == "fact" for e in store.entries)
