@@ -325,29 +325,6 @@ Common environment variables:
 
 ---
 
-## Project structure
-
-```text
-zuse/
-  cli.py                    Terminal REPL, slash commands, provider selection
-  webui.py                  Local browser WebGUI
-  gui.py                    Native Tkinter GUI
-  agent.py                  Provider-neutral agentic loop
-  config.py                 Config, pricing, system prompt
-  knowledge.py              Persistent learning store
-  embeddings.py             Optional local embeddings
-  ui.py                     Rich terminal UI
-  permissions.py            Confirmation gating
-  costs.py                  Token/cost accounting
-  session.py                Save/load conversations
-  whatsapp.py               WhatsApp bridge
-  telegram.py               Telegram bot
-  providers/                Anthropic, Ollama, OpenAI, Codex backends
-  tools/                    Filesystem, shell, browser, macOS, MCP and sub-agent tools
-```
-
----
-
 ## Safety
 
 Zuse can execute commands and edit files on your machine. By default it asks before side-effecting actions. Use `--yolo` only in trusted projects and sessions.
