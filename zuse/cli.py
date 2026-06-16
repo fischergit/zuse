@@ -14,6 +14,7 @@ from typing import Callable
 
 from rich.console import Console
 from rich.table import Table
+from rich.progress_bar import ProgressBar
 
 from . import __version__, ui
 from .agent import Agent
@@ -40,6 +41,7 @@ SLASH_HELP = [
     ("/tools", "List available tools"),
     ("/mcp", "Show connected MCP servers and their tools"),
     ("/cost", "Show token usage and estimated cost"),
+    ("/ratelimit", "Show Codex rate-limit usage when available"),
     ("/memory", "Show learned knowledge"),
     ("/forget", "Clear all learned knowledge"),
     ("/system", "Show the active system prompt"),
@@ -114,6 +116,69 @@ def _run_doctor(agent: Agent, console: Console) -> None:
     table.add_column("details", style="white")
     for name, status, detail in rows:
         table.add_row(name, f"[{styles[status]}]{icons[status]} {status}[/]", detail)
+    console.print(table)
+
+
+def _codex_rate_limit_status(agent: Agent) -> dict | None:
+    if agent.config.provider != "codex":
+        return None
+    getter = getattr(agent.backend, "rate_limit_status", None)
+    if getter is None:
+        return {"provider": "codex", "limits": [], "headers": {}}
+    try:
+        return getter()
+    except Exception as e:  # noqa: BLE001
+        return {"provider": "codex", "limits": [], "headers": {}, "error": str(e)}
+
+
+def _format_reset(seconds: int | None) -> str:
+    if seconds is None:
+        return "—"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {sec}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m"
+
+
+def _render_rate_limits(agent: Agent, console: Console) -> None:
+    status = _codex_rate_limit_status(agent)
+    if status is None:
+        console.print("[dim]Rate-Limit-Anzeige ist nur für provider=codex verfügbar.[/]")
+        return
+    if status.get("error"):
+        console.print(f"[#F87171]Codex rate-limit error:[/] {status['error']}")
+        return
+    limits = status.get("limits") or []
+    if not limits:
+        console.print(
+            "[dim]Noch keine Codex-Rate-Limit-Header empfangen. "
+            "Starte eine Codex-Anfrage und rufe danach /ratelimit oder /cost auf.[/]"
+        )
+        headers = status.get("headers") or {}
+        if headers:
+            console.print("[dim]Raw headers:[/]")
+            for key, value in headers.items():
+                console.print(f"  [cyan]{key}[/]: {value}")
+        return
+
+    table = Table(title="Codex rate limit", box=None, padding=(0, 2))
+    table.add_column("limit", style="bold cyan")
+    table.add_column("usage")
+    table.add_column("used")
+    table.add_column("remaining")
+    table.add_column("reset", style="dim")
+    for limit in limits:
+        used = limit.get("used_percent")
+        used_value = 0 if used is None else max(0, min(100, int(round(used))))
+        bar = ProgressBar(total=100, completed=used_value, width=22)
+        used_text = f"{used_value}%" if used is not None else "—"
+        remaining = limit.get("remaining")
+        total = limit.get("limit")
+        remaining_text = f"{remaining if remaining is not None else '?'} / {total if total is not None else '?'}"
+        table.add_row(str(limit.get("name") or "requests"), bar, used_text, remaining_text, _format_reset(limit.get("reset_seconds")))
     console.print(table)
 
 
@@ -315,6 +380,10 @@ def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
                 console.print(f"  [#F87171]✗ {srv_name}[/]  [dim]{err[:80]}[/]")
     elif name == "/cost":
         console.print("  " + agent.usage.summary(agent.cost_model))
+        if cfg.provider == "codex":
+            _render_rate_limits(agent, console)
+    elif name in {"/ratelimit", "/rate-limit", "/rate"}:
+        _render_rate_limits(agent, console)
     elif name == "/memory":
         store = agent.knowledge
         if not store.entries:
@@ -439,6 +508,8 @@ def run_repl(agent: Agent, console: Console) -> None:
             console.print(f"[#F87171]error:[/] {type(e).__name__}: {e}")
     agent.shutdown()
     ui.render_meta(console, agent.usage.summary(agent.cost_model))
+    if agent.config.provider == "codex":
+        _render_rate_limits(agent, console)
     console.print("[#22d3ee]✦ until next time.[/]")
 
 
@@ -674,6 +745,8 @@ def main(argv: list[str] | None = None) -> int:
             return 130
         agent.shutdown()
         ui.render_meta(console, agent.usage.summary(agent.cost_model))
+        if agent.config.provider == "codex":
+            _render_rate_limits(agent, console)
         return 0
 
     run_repl(agent, console)

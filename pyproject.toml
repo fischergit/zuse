@@ -19,6 +19,8 @@ dependencies = [
 
 [project.scripts]
 zuse = "zuse.cli:main"
+zuse-gui = "zuse.gui:main"
+zuse-web = "zuse.webui:main"
 zuse-whatsapp = "zuse.whatsapp:main"
 zuse-telegram = "zuse.telegram:main"
 

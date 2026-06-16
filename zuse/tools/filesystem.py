@@ -24,6 +24,61 @@ def _diff(before: str, after: str, path: str, max_lines: int = 40) -> str:
     if len(lines) > max_lines:
         lines = lines[:max_lines] + [f"… (+{len(lines) - max_lines} more diff lines)"]
     return "\n".join(lines)
+
+
+class EditMiss(Exception):
+    """edit_file could not match old_string against the file."""
+
+
+def _too_many(count: int) -> str:
+    return (f"old_string appears {count} times. Add surrounding context to make it "
+            "unique, or set replace_all=true.")
+
+
+def apply_edit(text: str, old: str, new: str, replace_all: bool) -> tuple[str, int]:
+    """Return (new_text, replacements). Tries an exact match first, then tolerates
+    CRLF/LF differences and trailing whitespace per line (a common reason a model's
+    old_string fails to match). Raises EditMiss with guidance if nothing matches."""
+    # 1. exact
+    if old in text:
+        count = text.count(old)
+        if count > 1 and not replace_all:
+            raise EditMiss(_too_many(count))
+        return (text.replace(old, new) if replace_all else text.replace(old, new, 1)), count
+
+    # 2. CRLF/LF mismatch — normalize both sides to LF
+    if "\r\n" in text or "\r\n" in old:
+        t2, o2, n2 = (s.replace("\r\n", "\n") for s in (text, old, new))
+        if o2 in t2:
+            count = t2.count(o2)
+            if count > 1 and not replace_all:
+                raise EditMiss(_too_many(count))
+            return (t2.replace(o2, n2) if replace_all else t2.replace(o2, n2, 1)), count
+
+    # 3. trailing-whitespace-per-line, whole-line match
+    tlines = text.split("\n")
+    olines = old.split("\n")
+    norm_t = [ln.rstrip() for ln in tlines]
+    norm_o = [ln.rstrip() for ln in olines]
+    k = len(norm_o)
+    if k and norm_o != [""] * k:
+        hits = [i for i in range(len(norm_t) - k + 1) if norm_t[i:i + k] == norm_o]
+        if len(hits) > 1 and not replace_all:
+            raise EditMiss(_too_many(len(hits)))
+        if hits:
+            targets = hits if replace_all else hits[:1]
+            new_lines = new.split("\n")
+            out = list(tlines)
+            for i in sorted(targets, reverse=True):
+                out[i:i + k] = new_lines
+            return "\n".join(out), len(targets)
+
+    raise EditMiss(
+        "old_string not found. Read the file again and copy the exact text to replace, "
+        "including indentation — whitespace and line breaks must match."
+    )
+
+
 IGNORE_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache",
                ".ruff_cache", "dist", "build", ".idea", ".pytest_cache"}
 
@@ -144,32 +199,32 @@ class EditFile(Tool):
         if not path.exists():
             raise ToolError(f"File not found: {path}")
         text = path.read_text(errors="replace")
-        old = args["old_string"]
-        new = args["new_string"]
-        count = text.count(old)
-        if count == 0:
-            raise ToolError("old_string not found. Read the file and copy the exact text.")
-        if count > 1 and not args.get("replace_all"):
-            raise ToolError(
-                f"old_string appears {count} times. Add surrounding context to make it "
-                "unique, or set replace_all=true."
+        try:
+            new_text, count = apply_edit(
+                text, args["old_string"], args["new_string"], bool(args.get("replace_all"))
             )
-        new_text = text.replace(old, new) if args.get("replace_all") else text.replace(old, new, 1)
+        except EditMiss as e:
+            raise ToolError(str(e))
         path.write_text(new_text)
         if ctx.journal is not None:
             ctx.journal.record(path, text, new_text)
-        return f"Edited {path} ({count if args.get('replace_all') else 1} replacement(s))."
+        return f"Edited {path} ({count} replacement(s))."
 
     def permission_preview(self, args: dict[str, Any], ctx: ToolContext) -> str:
         path = ctx.resolve(args["path"])
-        if path.exists():
-            text = path.read_text(errors="replace")
-            old, new = args.get("old_string", ""), args.get("new_string", "")
-            after = text.replace(old, new, 1) if old in text else text
-            return f"Edit {path}\n\n{_diff(text, after, str(path))}"
-        old = "\n".join(f"-{line}" for line in args.get("old_string", "").splitlines()[:8])
-        new = "\n".join(f"+{line}" for line in args.get("new_string", "").splitlines()[:8])
-        return f"Edit {path}\n\n{old}\n{new}"
+        if not path.exists():
+            old = "\n".join(f"-{line}" for line in args.get("old_string", "").splitlines()[:8])
+            new = "\n".join(f"+{line}" for line in args.get("new_string", "").splitlines()[:8])
+            return f"Edit {path}\n\n{old}\n{new}"
+        text = path.read_text(errors="replace")
+        try:
+            new_text, _ = apply_edit(
+                text, args.get("old_string", ""), args.get("new_string", ""),
+                bool(args.get("replace_all")),
+            )
+        except EditMiss as e:
+            return f"Edit {path}\n\n⚠ {e}"
+        return f"Edit {path}\n\n{_diff(text, new_text, str(path))}"
 
     def call_summary(self, args: dict[str, Any]) -> str:
         return _short(args.get("path", ""))

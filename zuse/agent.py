@@ -112,6 +112,7 @@ class Agent:
         self.journal = EditJournal()
         self.browser = BrowserManager(headless=config.browser_headless)
         self._last_ctx = 0  # approx input tokens of the last request, for compaction
+        self.stream_view_factory = None  # optional callable(console, markdown, show_thinking) -> StreamSink
         self.ctx = ToolContext(
             cwd=Path.cwd(),
             console=self.console,
@@ -226,7 +227,8 @@ class Agent:
         used: list[str] = []
 
         for _ in range(MAX_STEPS):
-            with ui.StreamView(
+            view_factory = self.stream_view_factory or ui.StreamView
+            with view_factory(
                 self.console,
                 markdown=self.config.stream_markdown,
                 show_thinking=self.config.show_thinking,

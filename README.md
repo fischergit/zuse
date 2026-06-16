@@ -70,6 +70,7 @@ zuse --provider codex -m gpt-5   # use OpenAI's model via your ChatGPT plan (exp
   AppleScript, clicks, typing) ask for confirmation, with per-tool "always allow"
   and a global `--yolo` mode.
 - **Planning** — the agent maintains a visible task list for multi-step work.
+- **WebGUI + native GUI** — `zuse-web` starts a local browser UI; `zuse-gui` starts a Tkinter chat window.
 - **Sessions** — save and reload conversations.
 - **Cost tracking** — live token usage and USD cost estimates (free for local
   models), with prompt caching of the system + tool prefix.
@@ -111,9 +112,35 @@ zuse --provider anthropic ... # force the cloud backend
 Interactive REPL:
 
 ```bash
-zuse                  # local if no key, else Claude
-zuse --local          # force local Ollama
+zuse                             # local if no key, else Claude
+zuse --local                     # force local Ollama
+zuse --provider codex            # use ChatGPT/Codex OAuth backend
 ```
+
+Local WebGUI:
+
+```bash
+zuse-web                         # starts http://127.0.0.1:8765 and opens the browser
+zuse-web --provider codex        # use ChatGPT/Codex OAuth backend
+zuse-web --local                 # force local Ollama
+zuse-web --no-open               # start server without opening the browser
+```
+
+Die WebGUI ist gesondert über `zuse-web` verfügbar; `zuse` startet die Terminal-REPL.
+
+The WebGUI keeps one persistent Zuse agent in the Python server. It provides a
+browser chat UI, status/backend display, clear, cost display, and session save.
+It is local-only by default (`127.0.0.1`).
+
+Native graphical local UI:
+
+```bash
+zuse-gui                         # opens a local Tkinter Zuse chat window
+zuse-gui --provider codex --auto # use ChatGPT/Codex OAuth backend
+zuse-gui --local --auto          # force local Ollama
+```
+
+The native GUI also keeps one persistent Zuse agent in the window.
 
 One-shot (non-interactive):
 

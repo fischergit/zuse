@@ -7,7 +7,6 @@ from enum import Enum
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Prompt
 from rich.text import Text
 
 
@@ -67,16 +66,20 @@ class PermissionManager:
                 expand=False,
             )
         )
-        choice = Prompt.ask(
-            "  [bold #FBBF24]allow?[/]",
-            choices=["y", "n", "a"],
-            default="y",
-            show_choices=False,
-            console=self.console,
-        )
-        if choice == "a":
-            self._always.add(tool_name)
-            return Decision.ALLOW
-        if choice == "n":
-            return Decision.DENY
-        return Decision.ALLOW
+        for _ in range(3):
+            try:
+                raw = self.console.input(
+                    "  [bold #FBBF24]allow?[/] [grey50](y/n/a)[/] "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                return Decision.DENY
+            choice = raw[:1] if raw else "y"  # empty / Enter = allow once
+            if choice == "y":
+                return Decision.ALLOW
+            if choice == "a":
+                self._always.add(tool_name)
+                return Decision.ALLOW
+            if choice == "n":
+                return Decision.DENY
+            self.console.print("  [grey50]please answer y, n, or a[/]")
+        return Decision.DENY  # too many unrecognized answers — deny to be safe

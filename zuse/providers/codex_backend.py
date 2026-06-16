@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
@@ -18,6 +19,20 @@ import httpx
 from ..config import Config
 from ..openai_auth import CODEX_BASE_URL, get_access_token
 from .base import Backend, StepResult, StreamSink, ToolCall, ToolResult
+
+
+@dataclass(frozen=True)
+class CodexRateLimit:
+    name: str
+    limit: int | None = None
+    remaining: int | None = None
+    reset_seconds: int | None = None
+
+    @property
+    def used_percent(self) -> float | None:
+        if not self.limit or self.remaining is None:
+            return None
+        return max(0.0, min(100.0, (self.limit - self.remaining) / self.limit * 100.0))
 
 
 class CodexBackend(Backend):
@@ -30,6 +45,8 @@ class CodexBackend(Backend):
         self.config = config
         self.model = model
         self.session_id = str(uuid.uuid4())
+        self.rate_limits: list[CodexRateLimit] = []
+        self.last_rate_limit_headers: dict[str, str] = {}
         # self.messages holds Responses-API "input" items.
 
     # -- history (Responses input items) -----------------------------------
@@ -96,6 +113,7 @@ class CodexBackend(Backend):
             with httpx.Client(timeout=None) as client:
                 with client.stream("POST", f"{CODEX_BASE_URL}/responses",
                                    json=payload, headers=headers) as resp:
+                    self._capture_rate_limits(resp.headers)
                     if resp.status_code != 200:
                         body = resp.read().decode(errors="replace")
                         raise RuntimeError(f"Codex backend {resp.status_code}: {body[:300]}")
@@ -172,6 +190,58 @@ class CodexBackend(Backend):
             usage=usage,
             raw=history_items,  # cleaned items safe to resend with store=false
         )
+
+    def _capture_rate_limits(self, headers: Any) -> None:
+        self.last_rate_limit_headers = {
+            str(k).lower(): str(v)
+            for k, v in headers.items()
+            if "ratelimit" in str(k).lower() or "rate-limit" in str(k).lower()
+        }
+        limits: list[CodexRateLimit] = []
+        by_name: dict[str, dict[str, int | None]] = {}
+
+        def parse_int(value: str | None) -> int | None:
+            if not value:
+                return None
+            try:
+                return int(float(value.strip()))
+            except ValueError:
+                return None
+
+        for key, value in self.last_rate_limit_headers.items():
+            normalized = key.replace("x-ratelimit-", "").replace("x-rate-limit-", "")
+            parts = normalized.split("-")
+            metric = parts[0]
+            name = "-".join(parts[1:]) or "requests"
+            if metric in {"limit", "remaining", "reset"}:
+                by_name.setdefault(name, {})[metric] = parse_int(value)
+
+        for name, values in sorted(by_name.items()):
+            limits.append(
+                CodexRateLimit(
+                    name=name,
+                    limit=values.get("limit"),
+                    remaining=values.get("remaining"),
+                    reset_seconds=values.get("reset"),
+                )
+            )
+        self.rate_limits = limits
+
+    def rate_limit_status(self) -> dict[str, Any]:
+        return {
+            "provider": "codex",
+            "limits": [
+                {
+                    "name": limit.name,
+                    "limit": limit.limit,
+                    "remaining": limit.remaining,
+                    "reset_seconds": limit.reset_seconds,
+                    "used_percent": limit.used_percent,
+                }
+                for limit in self.rate_limits
+            ],
+            "headers": self.last_rate_limit_headers,
+        }
 
     # -- persistence -------------------------------------------------------
 
