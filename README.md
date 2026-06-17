@@ -14,39 +14,6 @@ By default, Zuse runs locally through [Ollama](https://ollama.com) when no API k
 
 ---
 
-## Quick start
-
-```bash
-cd /Users/nik/agent
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-### Local mode with Ollama
-
-```bash
-ollama serve
-ollama pull qwen2.5
-zuse
-```
-
-### Claude / cloud mode
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-zuse --provider anthropic
-```
-
-### ChatGPT / Codex OAuth
-
-```bash
-zuse --login
-zuse --provider codex -m gpt-5
-```
-
----
-
 ## Main commands
 
 | Command | What it starts |
