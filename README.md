@@ -17,7 +17,6 @@ By default, Zuse runs locally through [Ollama](https://ollama.com) when no API k
 ## Quick start
 
 ```bash
-cd /Users/nik/agent
 ./install.sh --current-dir
 ```
 
