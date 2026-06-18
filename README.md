@@ -18,9 +18,16 @@ By default, Zuse runs locally through [Ollama](https://ollama.com) when no API k
 
 ```bash
 cd /Users/nik/agent
-python -m venv .venv
+./install.sh --current-dir
+```
+
+Manual developer install:
+
+```bash
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+zuse-setup
 ```
 
 ### Local mode with Ollama
@@ -57,6 +64,7 @@ zuse --provider codex -m gpt-5
 | `zuse-gui` | Native Tkinter desktop GUI |
 | `zuse-whatsapp` | WhatsApp bridge |
 | `zuse-telegram` | Telegram bot |
+| `zuse-setup` / `zuse --setup` | Local setup wizard |
 
 The WebGUI is intentionally separate: `zuse` starts the terminal REPL, `zuse-web` starts the browser UI.
 

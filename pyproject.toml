@@ -23,6 +23,7 @@ zuse-gui = "zuse.gui:main"
 zuse-web = "zuse.webui:main"
 zuse-whatsapp = "zuse.whatsapp:main"
 zuse-telegram = "zuse.telegram:main"
+zuse-setup = "zuse.setup:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]

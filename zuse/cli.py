@@ -27,6 +27,7 @@ HISTORY_FILE = CONFIG_DIR / "history"
 SLASH_HELP = [
     ("/help", "Show this command list"),
     ("/doctor", "Check Zuse's local setup and optional capabilities"),
+    ("/setup", "Run the local setup wizard"),
     ("/selftest", "Run safe checks for Zuse's core local tools"),
     ("/clear", "Clear the conversation (keep settings)"),
     ("/undo", "Revert the last file change Zuse made"),
@@ -319,6 +320,12 @@ def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
         _print_help(console)
     elif name == "/doctor":
         _run_doctor(agent, console)
+    elif name == "/setup":
+        from .setup import run_setup
+
+        run_setup(non_interactive=False)
+        agent.config = Config.load()
+        agent.refresh_system()
     elif name == "/selftest":
         _run_selftest(agent, console)
     elif name == "/clear":
@@ -679,6 +686,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--openai-base-url", help="OpenAI-compatible base URL (default OpenAI).")
     p.add_argument("--list-models", action="store_true", help="List local Ollama models and exit.")
     p.add_argument("--doctor", action="store_true", help="Check Zuse's local setup and optional capabilities, then exit.")
+    p.add_argument("--setup", action="store_true", help="Run Zuse's local setup wizard, then exit.")
     p.add_argument("--selftest", action="store_true", help="Run safe checks for Zuse's core local tools, then exit.")
     p.add_argument("-e", "--effort", choices=["low", "medium", "high", "xhigh", "max"])
     p.add_argument("--auto", action="store_true",
@@ -736,6 +744,11 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:  # noqa: BLE001
             console.print(f"[#F87171]Login failed:[/] {e}")
             return 1
+
+    if args.setup:
+        from .setup import run_setup
+
+        return run_setup(non_interactive=not sys.stdin.isatty())
 
     if args.list_models:
         from .providers.ollama_backend import OllamaBackend
