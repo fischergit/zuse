@@ -115,7 +115,7 @@ zuse --local -m qwen2.5-coder --yolo "run the test suite and fix failures"
 - **Browser automation** — real Chromium automation for JS-rendered sites.
 - **MCP support** — connect external Model Context Protocol servers through `~/.zuse/mcp.json`.
 - **Continuous learning** — stores durable preferences, facts and procedures in `~/.zuse/knowledge.jsonl`.
-- **Sub-agents** — delegate isolated research or implementation subtasks.
+- **Sub-agents and crews** — delegate isolated subtasks or coordinate planner/researcher/tester/reviewer mini-teams.
 - **Cost visibility** — `/cost` shows token usage and estimated spend.
 - **Multiple interfaces** — terminal, WebGUI, native GUI, WhatsApp and Telegram.
 
@@ -165,6 +165,19 @@ zuse --no-thinking      # faster local responses on small models
 | `/save <name>` / `/load <name>` / `/sessions` | Session persistence |
 | `/system` | Show the active system prompt |
 | `/exit` | Quit |
+
+---
+
+## Multi-agent delegation
+
+Zuse has two delegation tools:
+
+| Tool | Use case |
+|---|---|
+| `task` | One focused, isolated sub-agent for research or a small self-contained job |
+| `crew` | A coordinated mini-team for larger work, e.g. planner + researcher + tester/reviewer |
+
+The main agent decides when to call these tools. Crews return a synthesized handoff with findings, changes, verification and next actions.
 
 ---
 

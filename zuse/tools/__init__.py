@@ -9,7 +9,7 @@ from .code import PythonExec
 from .filesystem import EditFile, Glob, Grep, ListDirectory, ReadFile, WriteFile
 from .productivity import Remember, TodoWrite
 from .shell import Bash, BgList, BgLogs, BgStop, RunBackground
-from .subagent import Task
+from .subagent import Crew, Task
 
 
 def default_tools() -> list[Tool]:
@@ -31,6 +31,7 @@ def default_tools() -> list[Tool]:
         TodoWrite(),
         Remember(),
         Task(),
+        Crew(),
     ]
     if sys.platform == "darwin":
         from .computer import computer_tools

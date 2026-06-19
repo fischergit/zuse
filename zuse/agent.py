@@ -27,7 +27,7 @@ from .permissions import Decision, PermissionManager
 from .shell import BackgroundManager, ShellSession
 from .providers import Backend, StepResult, ToolCall, ToolResult
 from .tools import Tool, ToolContext, ToolError, ToolOutput, build_registry, default_tools
-from .tools.subagent import Task
+from .tools.subagent import Crew, Task
 
 MAX_STEPS = 60  # safety ceiling on tool-loop iterations per user turn
 
@@ -125,6 +125,7 @@ class Agent:
             journal=self.journal,
             browser=self.browser,
             spawn_subagent=self._run_subagent,
+            spawn_crew=self._run_crew,
         )
 
     def _make_embedder(self):
@@ -391,24 +392,43 @@ class Agent:
                 learned.append((entry.kind, entry.text))
         return learned
 
-    # -- sub-agent ---------------------------------------------------------
+    # -- sub-agents / crews ------------------------------------------------
+
+    def _subagent_tools(self) -> list[Tool]:
+        """Tools exposed to nested agents.
+
+        Nested agents may use normal local tools, but they cannot recursively spawn
+        `task` or `crew` calls. This keeps orchestration bounded and avoids runaway
+        agent trees.
+        """
+        return [t for t in self.tools if not isinstance(t, (Task, Crew))]
 
     def _run_subagent(self, instructions: str, max_steps: int) -> str:
+        return self._run_specialist(
+            role="sub-agent",
+            title="Focused delegated task",
+            instructions=instructions,
+            max_steps=max_steps,
+        )
+
+    def _run_specialist(self, role: str, title: str, instructions: str, max_steps: int) -> str:
         sub = self.backend_factory()
-        sub_tools = [t for t in self.tools if not isinstance(t, Task)]
+        sub_tools = self._subagent_tools()
         sub_registry = build_registry(sub_tools)
         schemas = [t.to_schema() for t in sub_tools]
         sub_system = (
-            "You are a focused sub-agent spawned to complete a single self-contained "
-            "task. Use your tools to accomplish it, then return a concise, complete "
-            "report of what you found or did. You cannot ask the user questions."
+            f"You are Zuse's {role} specialist. Complete exactly one assigned task. "
+            "Use tools when useful, keep changes focused, verify your own claims when "
+            "possible, and finish with a concise report containing: summary, files or "
+            "commands inspected/changed, verification performed, and blockers. You cannot "
+            "ask the user questions."
         )
-        sub.add_user(instructions)
+        sub.add_user(f"# Task: {title}\n\n{instructions}")
         view = ui.NullView()
         final_text = ""
 
-        with self.console.status("[magenta]sub-agent working…[/]", spinner="dots"):
-            for _ in range(max_steps):
+        with self.console.status(f"[magenta]{role} working…[/]", spinner="dots"):
+            for _ in range(max(1, max_steps)):
                 result: StepResult = sub.generate(sub_system, schemas, view, effort="medium")
                 self.usage.add(result.usage)
                 sub.add_assistant(result)
@@ -426,9 +446,117 @@ class Agent:
                         continue
                     try:
                         out = tool.run(tc.input, self.ctx)
-                        results.append(ToolResult(tc.id, tc.name, out))
+                        text, images = (out.text, out.images) if isinstance(out, ToolOutput) else (out, [])
+                        results.append(ToolResult(tc.id, tc.name, text, images=images))
                     except Exception as e:  # noqa: BLE001
                         results.append(ToolResult(tc.id, tc.name, str(e), True))
                 sub.add_tool_results(results)
 
-        return final_text or "(sub-agent returned no text)"
+        return final_text or f"({role} returned no text)"
+
+    def _default_crew_tasks(self, goal: str, mode: str, max_steps: int) -> list[dict[str, Any]]:
+        if mode == "research":
+            return [
+                {
+                    "role": "researcher",
+                    "title": "Map relevant code and constraints",
+                    "instructions": f"Research this goal without editing files: {goal}",
+                    "max_steps": max_steps,
+                },
+                {
+                    "role": "reviewer",
+                    "title": "Review risks and propose implementation plan",
+                    "instructions": f"Review the goal and produce a concise execution plan: {goal}",
+                    "max_steps": max(4, max_steps // 2),
+                },
+            ]
+        if mode == "review":
+            return [
+                {
+                    "role": "reviewer",
+                    "title": "Review current changes",
+                    "instructions": f"Review the repository changes and risks for this goal: {goal}",
+                    "max_steps": max_steps,
+                },
+                {
+                    "role": "tester",
+                    "title": "Suggest or run verification",
+                    "instructions": f"Find and, if safe, run focused verification for: {goal}",
+                    "max_steps": max_steps,
+                },
+            ]
+        return [
+            {
+                "role": "planner",
+                "title": "Break down the goal",
+                "instructions": f"Create a short implementation plan for this goal: {goal}",
+                "max_steps": max(4, max_steps // 2),
+            },
+            {
+                "role": "researcher",
+                "title": "Inspect relevant code",
+                "instructions": f"Inspect the codebase for files and conventions relevant to: {goal}",
+                "max_steps": max_steps,
+            },
+            {
+                "role": "tester",
+                "title": "Identify verification path",
+                "instructions": f"Find the most relevant tests/checks for this goal and report how to verify it: {goal}",
+                "max_steps": max(4, max_steps // 2),
+            },
+        ]
+
+    def _normalize_crew_tasks(
+        self, goal: str, tasks: list[dict[str, Any]], mode: str, max_steps: int
+    ) -> list[dict[str, Any]]:
+        if not tasks:
+            return self._default_crew_tasks(goal, mode, max_steps)
+        normalized = []
+        for i, raw in enumerate(tasks, start=1):
+            if not isinstance(raw, dict):
+                continue
+            role = str(raw.get("role") or f"agent-{i}").strip()
+            title = str(raw.get("title") or role).strip()
+            instructions = str(raw.get("instructions") or "").strip()
+            if not instructions:
+                instructions = f"Work on this part of the goal: {goal}"
+            try:
+                steps = int(raw.get("max_steps", max_steps))
+            except (TypeError, ValueError):
+                steps = max_steps
+            normalized.append({"role": role, "title": title, "instructions": instructions, "max_steps": steps})
+        return normalized or self._default_crew_tasks(goal, mode, max_steps)
+
+    def _run_crew(
+        self, goal: str, tasks: list[dict[str, Any]], mode: str = "auto", max_steps: int = 10
+    ) -> str:
+        plan = self._normalize_crew_tasks(goal, tasks, mode, max_steps)
+        reports: list[str] = []
+        self.console.print(f"[magenta]crew:[/] {len(plan)} specialist(s) for {goal[:90]}")
+        for i, task in enumerate(plan, start=1):
+            role = str(task["role"])
+            title = str(task["title"])
+            self.console.print(f"  [cyan]{i}. {role}[/] — {title}")
+            report = self._run_specialist(
+                role=role,
+                title=title,
+                instructions=str(task["instructions"]),
+                max_steps=int(task["max_steps"]),
+            )
+            reports.append(f"## {i}. {role}: {title}\n{report.strip()}")
+
+        synthesis = (
+            "You are Zuse's crew coordinator. Synthesize the specialist reports into "
+            "one concise handoff for the main agent. Include: overall status, key "
+            "findings, changes made, verification/results, blockers, and recommended "
+            "next actions. Do not invent work that the reports do not support."
+        )
+        sub = self.backend_factory()
+        sub.add_user(f"# Goal\n{goal}\n\n# Specialist reports\n\n" + "\n\n".join(reports))
+        try:
+            result = sub.generate(synthesis, [], ui.NullView(), effort="low", think=False)
+            self.usage.add(result.usage)
+            summary = result.text.strip()
+        except Exception:  # noqa: BLE001
+            summary = "\n\n".join(reports)
+        return summary or "\n\n".join(reports) or "(crew returned no reports)"

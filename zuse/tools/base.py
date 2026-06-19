@@ -37,6 +37,9 @@ class ToolContext:
     # Factory to spawn a sub-agent (set by the Agent at runtime). Signature:
     # (task: str, max_steps: int) -> str
     spawn_subagent: Callable[[str, int], str] | None = None
+    # Factory to run a small multi-agent crew. Signature:
+    # (goal: str, tasks: list[dict], mode: str, max_steps: int) -> str
+    spawn_crew: Callable[[str, list[dict[str, Any]], str, int], str] | None = None
 
     def resolve(self, path: str) -> Path:
         p = Path(path).expanduser()
