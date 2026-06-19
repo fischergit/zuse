@@ -25,7 +25,8 @@ RED='\033[0;31m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-REPO_URL="${ZUSE_REPO_URL:-https://github.com/fischergit/zuse-agent.git}"
+REPO_URL="${ZUSE_REPO_URL:-https://github.com/fischergit/zuse.git}"
+ARCHIVE_URL_BASE="${ZUSE_ARCHIVE_URL_BASE:-https://github.com/fischergit/zuse/archive/refs/heads}"
 BRANCH="${ZUSE_BRANCH:-main}"
 INSTALL_DIR="${ZUSE_INSTALL_DIR:-$HOME/.zuse/zuse-agent}"
 ZUSE_HOME="${ZUSE_HOME:-$HOME/.zuse}"
@@ -49,6 +50,8 @@ Usage: install.sh [OPTIONS]
 Options:
   --dir PATH           Installation directory (default: ~/.zuse/zuse-agent)
   --repo URL           Git repository URL (default: $REPO_URL)
+  --archive-base URL   Archive base URL for git-free installs
+                       (default: $ARCHIVE_URL_BASE)
   --branch NAME        Git branch (default: main)
   --zuse-home PATH     Zuse data/config directory (default: ~/.zuse)
   --skip-setup         Do not run the setup wizard
@@ -63,6 +66,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dir) INSTALL_DIR="$2"; shift 2 ;;
     --repo) REPO_URL="$2"; shift 2 ;;
+    --archive-base) ARCHIVE_URL_BASE="$2"; shift 2 ;;
     --branch) BRANCH="$2"; shift 2 ;;
     --zuse-home) ZUSE_HOME="$2"; shift 2 ;;
     --skip-setup) RUN_SETUP=false; shift ;;
@@ -113,6 +117,51 @@ ensure_path_line() {
   fi
 }
 
+copy_tree() {
+  local src="$1"
+  local dst="$2"
+  rm -rf "$dst"
+  mkdir -p "$dst"
+  (cd "$src" && tar -cf - .) | (cd "$dst" && tar -xf -)
+}
+
+download_archive() {
+  local url="$1"
+  local target="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL "$url" -o "$target"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$url" "$target" <<'PY'
+import sys
+from urllib.request import urlopen
+url, target = sys.argv[1], sys.argv[2]
+with urlopen(url, timeout=60) as response, open(target, "wb") as out:
+    out.write(response.read())
+PY
+  else
+    err "Need curl or python3 to download Zuse without git."
+    return 1
+  fi
+}
+
+install_from_archive() {
+  local archive_url="${ARCHIVE_URL_BASE%/}/${BRANCH}.tar.gz"
+  local tmp_dir archive root_dir
+  tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t zuse-install)"
+  archive="$tmp_dir/zuse.tar.gz"
+  log "Downloading Zuse archive without git: $archive_url"
+  download_archive "$archive_url" "$archive"
+  tar -xzf "$archive" -C "$tmp_dir"
+  root_dir="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  if [ -z "$root_dir" ] || [ ! -f "$root_dir/pyproject.toml" ]; then
+    err "Downloaded archive does not look like the Zuse repository."
+    rm -rf "$tmp_dir"
+    exit 1
+  fi
+  copy_tree "$root_dir" "$INSTALL_DIR"
+  rm -rf "$tmp_dir"
+}
+
 install_shell_snippets() {
   local bin_dir="$HOME/.local/bin"
   mkdir -p "$bin_dir"
@@ -136,15 +185,29 @@ if [ "$USE_CURRENT_DIR" = true ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   INSTALL_DIR="$SCRIPT_DIR"
   log "Installing from current directory: $INSTALL_DIR"
-elif [ -d "$INSTALL_DIR/.git" ]; then
+elif [ -d "$INSTALL_DIR/.git" ] && command -v git >/dev/null 2>&1; then
   log "Updating existing checkout in $INSTALL_DIR"
-  git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH" || git -C "$INSTALL_DIR" fetch origin "$BRANCH"
-  git -C "$INSTALL_DIR" checkout "$BRANCH"
-  git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" || warn "Could not fast-forward; keeping current checkout"
+  if git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH" && \
+     git -C "$INSTALL_DIR" checkout "$BRANCH" && \
+     git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"; then
+    ok "Repository updated via git"
+  else
+    warn "Git update failed; falling back to archive download (no xcrun required)"
+    install_from_archive
+  fi
 else
-  log "Cloning $REPO_URL to $INSTALL_DIR"
-  rm -rf "$INSTALL_DIR"
-  git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
+  log "Installing Zuse to $INSTALL_DIR"
+  if command -v git >/dev/null 2>&1; then
+    if git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"; then
+      ok "Repository cloned via git"
+    else
+      warn "Git clone failed; falling back to archive download (no xcrun required)"
+      install_from_archive
+    fi
+  else
+    warn "git not found; using archive download (no xcrun required)"
+    install_from_archive
+  fi
 fi
 
 cd "$INSTALL_DIR"
