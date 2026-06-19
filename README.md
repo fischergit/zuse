@@ -16,6 +16,14 @@ By default, Zuse runs locally through [Ollama](https://ollama.com) when no API k
 
 ## Quick start
 
+Install directly from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fischergit/zuse/main/install.sh | bash
+```
+
+From a local checkout:
+
 ```bash
 ./install.sh --current-dir
 ```
@@ -108,7 +116,7 @@ zuse --local -m qwen2.5-coder --yolo "run the test suite and fix failures"
 - **MCP support** — connect external Model Context Protocol servers through `~/.zuse/mcp.json`.
 - **Continuous learning** — stores durable preferences, facts and procedures in `~/.zuse/knowledge.jsonl`.
 - **Sub-agents** — delegate isolated research or implementation subtasks.
-- **Cost and rate-limit visibility** — `/cost` plus Codex rate-limit display where headers are available.
+- **Cost visibility** — `/cost` shows token usage and estimated spend.
 - **Multiple interfaces** — terminal, WebGUI, native GUI, WhatsApp and Telegram.
 
 ---
@@ -153,7 +161,6 @@ zuse --no-thinking      # faster local responses on small models
 | `/tools` | List available tools |
 | `/mcp` | Show connected MCP servers |
 | `/cost` | Show token/cost summary |
-| `/ratelimit` | Show Codex rate-limit usage when available |
 | `/memory` / `/forget` | Show or clear learned knowledge |
 | `/save <name>` / `/load <name>` / `/sessions` | Session persistence |
 | `/system` | Show the active system prompt |
