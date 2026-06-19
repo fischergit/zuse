@@ -3,7 +3,7 @@
 # Zuse Installer
 # ============================================================================
 # Usage:
-#   curl -fsSL https://example.com/zuse/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/fischergit/zuse/main/install.sh | bash
 #   ./install.sh --dir ~/.zuse/zuse-agent --skip-setup
 # ============================================================================
 
