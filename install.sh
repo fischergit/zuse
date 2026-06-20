@@ -36,9 +36,9 @@ SKIP_BROWSER=false
 NON_INTERACTIVE=false
 USE_CURRENT_DIR=false
 
-log() { echo -e "${CYAN}→${NC} $*"; }
-ok() { echo -e "${GREEN}✓${NC} $*"; }
-warn() { echo -e "${YELLOW}⚠${NC} $*"; }
+log() { echo -e "${CYAN}→${NC} $*" >&2; }
+ok() { echo -e "${GREEN}✓${NC} $*" >&2; }
+warn() { echo -e "${YELLOW}⚠${NC} $*" >&2; }
 err() { echo -e "${RED}✗${NC} $*" >&2; }
 
 usage() {
@@ -56,6 +56,8 @@ Options:
   --zuse-home PATH     Zuse data/config directory (default: ~/.zuse)
   --skip-setup         Do not run the setup wizard
   --skip-browser       Do not install Playwright Chromium
+  --python VERSION     Python version to bootstrap with uv if Python is missing
+                       (default: $PYTHON_VERSION)
   --non-interactive    Avoid prompts; create default config/env only
   --current-dir        Install from the directory containing this script
   -h, --help           Show this help
@@ -71,6 +73,7 @@ while [ $# -gt 0 ]; do
     --zuse-home) ZUSE_HOME="$2"; shift 2 ;;
     --skip-setup) RUN_SETUP=false; shift ;;
     --skip-browser) SKIP_BROWSER=true; shift ;;
+    --python) PYTHON_VERSION="$2"; shift 2 ;;
     --non-interactive) NON_INTERACTIVE=true; shift ;;
     --current-dir) USE_CURRENT_DIR=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -104,6 +107,84 @@ PY
     return 0
   fi
   return 1
+}
+
+find_uv() {
+  if command -v uv >/dev/null 2>&1; then
+    command -v uv
+  elif [ -x "$HOME/.local/bin/uv" ]; then
+    echo "$HOME/.local/bin/uv"
+  elif [ -x "$HOME/.cargo/bin/uv" ]; then
+    echo "$HOME/.cargo/bin/uv"
+  else
+    return 1
+  fi
+}
+
+install_uv() {
+  local uv_installer uv_log
+  uv_installer="$(mktemp 2>/dev/null || echo "/tmp/zuse-uv-installer.$$.sh")"
+  uv_log="$(mktemp 2>/dev/null || echo "/tmp/zuse-uv-install.$$.log")"
+  log "Installing uv to bootstrap missing dependencies"
+  if command -v curl >/dev/null 2>&1; then
+    if ! curl -LsSf https://astral.sh/uv/install.sh -o "$uv_installer" 2>"$uv_log"; then
+      err "Failed to download uv installer."
+      sed 's/^/    /' "$uv_log" >&2 || true
+      rm -f "$uv_installer" "$uv_log"
+      return 1
+    fi
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - https://astral.sh/uv/install.sh "$uv_installer" <<'PY'
+import sys
+from urllib.request import urlopen
+url, target = sys.argv[1], sys.argv[2]
+with urlopen(url, timeout=60) as response, open(target, "wb") as out:
+    out.write(response.read())
+PY
+  else
+    err "Need curl to bootstrap uv when Python is missing."
+    rm -f "$uv_installer" "$uv_log"
+    return 1
+  fi
+  if ! sh "$uv_installer" >>"$uv_log" 2>&1; then
+    err "Failed to install uv."
+    sed 's/^/    /' "$uv_log" >&2 || true
+    rm -f "$uv_installer" "$uv_log"
+    return 1
+  fi
+  rm -f "$uv_installer" "$uv_log"
+  find_uv
+}
+
+ensure_uv() {
+  find_uv || install_uv
+}
+
+ensure_python() {
+  local py uv_cmd
+  py="$(find_python || true)"
+  if [ -n "$py" ]; then
+    echo "$py"
+    return 0
+  fi
+
+  warn "Python 3.10+ not found; installing Python $PYTHON_VERSION with uv (no xcrun required)"
+  uv_cmd="$(ensure_uv)" || return 1
+  "$uv_cmd" python install "$PYTHON_VERSION"
+  "$uv_cmd" python find "$PYTHON_VERSION"
+}
+
+create_venv() {
+  local py="$1"
+  rm -rf .venv
+  if "$py" -m venv .venv >/dev/null 2>&1; then
+    ok "Virtual environment created with stdlib venv"
+    return 0
+  fi
+
+  warn "python -m venv failed; creating virtual environment with uv"
+  UV_CMD="$(ensure_uv)" || return 1
+  "$UV_CMD" venv .venv --python "$py" --seed
 }
 
 ensure_path_line() {
@@ -212,15 +293,15 @@ fi
 
 cd "$INSTALL_DIR"
 
-PYTHON_BIN="$(find_python || true)"
+PYTHON_BIN="$(ensure_python || true)"
 if [ -z "$PYTHON_BIN" ]; then
-  err "Python 3.10+ not found. Install Python first, then rerun install.sh."
+  err "Could not find or install Python $PYTHON_VERSION. Install Python manually and rerun install.sh."
   exit 1
 fi
 ok "Python found: $($PYTHON_BIN --version 2>&1)"
 
 log "Creating virtual environment"
-"$PYTHON_BIN" -m venv .venv
+create_venv "$PYTHON_BIN"
 # shellcheck disable=SC1091
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
