@@ -56,8 +56,8 @@ Options:
   --zuse-home PATH     Zuse data/config directory (default: ~/.zuse)
   --skip-setup         Do not run the setup wizard
   --skip-browser       Do not install Playwright Chromium
-  --python VERSION     Python version to bootstrap with uv if Python is missing
-                       (default: $PYTHON_VERSION)
+  --python VERSION     Python version to use/bootstrap with uv
+                       (default: $PYTHON_VERSION; 3.11 avoids greenlet source builds)
   --non-interactive    Avoid prompts; create default config/env only
   --current-dir        Install from the directory containing this script
   -h, --help           Show this help
@@ -89,23 +89,52 @@ print_banner() {
   echo ""
 }
 
+python_matches_version() {
+  local py="$1"
+  "$py" - "$PYTHON_VERSION" <<'PY' >/dev/null 2>&1
+import sys
+want = tuple(int(p) for p in sys.argv[1].split('.')[:2])
+have = sys.version_info[:2]
+raise SystemExit(0 if have == want else 1)
+PY
+}
+
+python_is_supported() {
+  local py="$1"
+  "$py" <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if (3, 10) <= sys.version_info[:2] < (3, 13) else 1)
+PY
+}
+
 find_python() {
-  if command -v python3 >/dev/null 2>&1 && python3 - <<'PY' >/dev/null 2>&1
-import sys
-raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
-PY
-  then
-    command -v python3
-    return 0
-  fi
-  if command -v python >/dev/null 2>&1 && python - <<'PY' >/dev/null 2>&1
-import sys
-raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
-PY
-  then
-    command -v python
-    return 0
-  fi
+  # Prefer the requested Python line (default 3.11). Very new macOS/Python
+  # versions can force packages such as greenlet to build from source, which
+  # fails on machines without Xcode/CLT. Python 3.11 has broad prebuilt wheels.
+  for cmd in python3 python; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      local py
+      py="$(command -v "$cmd")"
+      if python_matches_version "$py"; then
+        echo "$py"
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
+
+find_supported_python() {
+  for cmd in python3 python; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      local py
+      py="$(command -v "$cmd")"
+      if python_is_supported "$py"; then
+        echo "$py"
+        return 0
+      fi
+    fi
+  done
   return 1
 }
 
@@ -168,14 +197,32 @@ ensure_python() {
     return 0
   fi
 
-  warn "Python 3.10+ not found; installing Python $PYTHON_VERSION with uv (no xcrun required)"
+  py="$(find_supported_python || true)"
+  if [ -n "$py" ]; then
+    warn "Found $($py --version 2>&1), but installing Python $PYTHON_VERSION to avoid source builds for binary packages"
+  else
+    warn "Python $PYTHON_VERSION not found; installing it with uv (no xcrun required)"
+  fi
   uv_cmd="$(ensure_uv)" || return 1
   "$uv_cmd" python install "$PYTHON_VERSION"
-  "$uv_cmd" python find "$PYTHON_VERSION"
+  # --system avoids resolving to a project-local .venv interpreter. Without it,
+  # `uv python find` returns ./.venv/bin/python3 when run from an install dir
+  # that already has a venv; create_venv then deletes that very interpreter.
+  "$uv_cmd" python find --system "$PYTHON_VERSION"
 }
 
 create_venv() {
   local py="$1"
+  # Guard against deleting the interpreter we're about to use: if $py lives
+  # inside the .venv we're about to remove, re-resolve to a managed Python.
+  case "$py" in
+    "$PWD/.venv/"*|.venv/*)
+      warn "Interpreter $py is inside the target .venv; re-resolving"
+      UV_CMD="$(ensure_uv)" || return 1
+      "$UV_CMD" python install "$PYTHON_VERSION"
+      py="$("$UV_CMD" python find --system "$PYTHON_VERSION")"
+      ;;
+  esac
   rm -rf .venv
   if "$py" -m venv .venv >/dev/null 2>&1; then
     ok "Virtual environment created with stdlib venv"
@@ -308,6 +355,17 @@ python -m pip install --upgrade pip setuptools wheel
 
 log "Installing Zuse"
 EXTRAS="mac,browser,whatsapp"
+if ! python -m pip install --only-binary=:all: greenlet >/dev/null 2>&1; then
+  warn "No prebuilt greenlet wheel for this Python/platform; retrying with Python $PYTHON_VERSION"
+  deactivate 2>/dev/null || true
+  UV_CMD="$(ensure_uv)" || exit 1
+  "$UV_CMD" python install "$PYTHON_VERSION"
+  PYTHON_BIN="$($UV_CMD python find --system "$PYTHON_VERSION")"
+  create_venv "$PYTHON_BIN"
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+  python -m pip install --upgrade pip setuptools wheel
+fi
 python -m pip install -e ".[${EXTRAS}]"
 ok "Zuse package installed"
 

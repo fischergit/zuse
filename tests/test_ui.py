@@ -11,5 +11,5 @@ def test_stream_view_prints_final_answer_once_with_transient_live():
 
     text = console.export_text()
 
-    assert text.count("◆ zuse") == 1
+    assert text.count("zuse") == 1
     assert text.count("Erledigt — final answer") == 1

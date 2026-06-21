@@ -74,6 +74,34 @@ class CodexBackend(Backend):
                 "output": out,
             })
 
+    def _heal_dangling_calls(self) -> None:
+        """Ensure every function_call in history has a matching output.
+
+        The Codex Responses API rejects input that contains a function_call with
+        no function_call_output (it answers "No tool output found for function
+        call …"). That happens whenever a tool run is interrupted between
+        add_assistant and add_tool_results — e.g. the user hit Ctrl-C, or a
+        loaded session was truncated. Synthesize a placeholder output for any
+        orphan so the conversation can always continue."""
+        answered = {
+            m.get("call_id")
+            for m in self.messages
+            if m.get("type") == "function_call_output"
+        }
+        healed: list[dict] = []
+        for m in self.messages:
+            healed.append(m)
+            if m.get("type") == "function_call":
+                cid = m.get("call_id")
+                if cid and cid not in answered:
+                    healed.append({
+                        "type": "function_call_output",
+                        "call_id": cid,
+                        "output": "ERROR: tool call interrupted before it produced output.",
+                    })
+                    answered.add(cid)
+        self.messages = healed
+
     # -- generation --------------------------------------------------------
 
     def _tools(self, client_tools: list[dict]) -> list[dict]:
@@ -86,6 +114,7 @@ class CodexBackend(Backend):
 
     def generate(self, system, tools, view: StreamSink, effort=None, think=None) -> StepResult:
         token, account_id = get_access_token()
+        self._heal_dangling_calls()
         payload: dict[str, Any] = {
             "model": self.model,
             "instructions": system,

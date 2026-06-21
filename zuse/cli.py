@@ -14,7 +14,6 @@ from typing import Callable
 
 from rich.console import Console
 from rich.table import Table
-from rich.progress_bar import ProgressBar
 
 from . import __version__, ui
 from .agent import Agent
@@ -42,7 +41,6 @@ SLASH_HELP = [
     ("/tools", "List available tools"),
     ("/mcp", "Show connected MCP servers and their tools"),
     ("/cost", "Show token usage and estimated cost"),
-    ("/ratelimit", "Show Codex rate-limit usage when available"),
     ("/memory [dedupe|compact]", "Show or clean learned knowledge"),
     ("/forget", "Clear all learned knowledge"),
     ("/system", "Show the active system prompt"),
@@ -117,105 +115,6 @@ def _run_doctor(agent: Agent, console: Console) -> None:
     table.add_column("details", style="white")
     for name, status, detail in rows:
         table.add_row(name, f"[{styles[status]}]{icons[status]} {status}[/]", detail)
-    console.print(table)
-
-
-def _codex_rate_limit_status(agent: Agent) -> dict | None:
-    if agent.config.provider != "codex":
-        return None
-    getter = getattr(agent.backend, "rate_limit_status", None)
-    if getter is None:
-        return {"provider": "codex", "limits": [], "headers": {}}
-    try:
-        return getter()
-    except Exception as e:  # noqa: BLE001
-        return {"provider": "codex", "limits": [], "headers": {}, "error": str(e)}
-
-
-def _format_reset(seconds: int | None) -> str:
-    if seconds is None:
-        return "—"
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes, sec = divmod(seconds, 60)
-    if minutes < 60:
-        return f"{minutes}m {sec}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes}m"
-
-
-def _rate_limit_summary(agent: Agent) -> str:
-    status = _codex_rate_limit_status(agent)
-    if status is None:
-        return "rate-limit: n/a"
-    if status.get("error"):
-        return "rate-limit: error"
-    limits = status.get("limits") or []
-    if not limits:
-        return "rate-limit: waiting"
-    chunks = []
-    for limit in limits[:3]:
-        name = str(limit.get("name") or "requests")
-        used = limit.get("used_percent")
-        remaining = limit.get("remaining")
-        total = limit.get("limit")
-        used_text = "?%" if used is None else f"{int(round(max(0, min(100, used))))}%"
-        if remaining is not None and total is not None:
-            chunks.append(f"{name} {used_text} ({remaining}/{total})")
-        else:
-            chunks.append(f"{name} {used_text}")
-    return "rate-limit: " + " · ".join(chunks)
-
-
-def _render_rate_limit_warning(agent: Agent, console: Console, threshold: int = 80) -> None:
-    status = _codex_rate_limit_status(agent)
-    if not status or status.get("error"):
-        return
-    warnings = []
-    for limit in status.get("limits") or []:
-        used = limit.get("used_percent")
-        if used is not None and used >= threshold:
-            warnings.append(f"{limit.get('name') or 'requests'} {int(round(used))}%")
-    if warnings:
-        console.print(f"[#FBBF24]Codex rate-limit warning:[/] {' · '.join(warnings)} used")
-
-
-def _render_rate_limits(agent: Agent, console: Console) -> None:
-    status = _codex_rate_limit_status(agent)
-    if status is None:
-        console.print("[dim]Rate-Limit-Anzeige ist nur für provider=codex verfügbar.[/]")
-        return
-    if status.get("error"):
-        console.print(f"[#F87171]Codex rate-limit error:[/] {status['error']}")
-        return
-    limits = status.get("limits") or []
-    if not limits:
-        console.print(
-            "[dim]Noch keine Codex-Rate-Limit-Header empfangen. "
-            "Starte eine Codex-Anfrage und rufe danach /ratelimit oder /cost auf.[/]"
-        )
-        headers = status.get("headers") or {}
-        if headers:
-            console.print("[dim]Raw headers:[/]")
-            for key, value in headers.items():
-                console.print(f"  [cyan]{key}[/]: {value}")
-        return
-
-    table = Table(title="Codex rate limit", box=None, padding=(0, 2))
-    table.add_column("limit", style="bold cyan")
-    table.add_column("usage")
-    table.add_column("used")
-    table.add_column("remaining")
-    table.add_column("reset", style="dim")
-    for limit in limits:
-        used = limit.get("used_percent")
-        used_value = 0 if used is None else max(0, min(100, int(round(used))))
-        bar = ProgressBar(total=100, completed=used_value, width=22)
-        used_text = f"{used_value}%" if used is not None else "—"
-        remaining = limit.get("remaining")
-        total = limit.get("limit")
-        remaining_text = f"{remaining if remaining is not None else '?'} / {total if total is not None else '?'}"
-        table.add_row(str(limit.get("name") or "requests"), bar, used_text, remaining_text, _format_reset(limit.get("reset_seconds")))
     console.print(table)
 
 
@@ -423,10 +322,6 @@ def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
                 console.print(f"  [#F87171]✗ {srv_name}[/]  [dim]{err[:80]}[/]")
     elif name == "/cost":
         console.print("  " + agent.usage.summary(agent.cost_model))
-        if cfg.provider == "codex":
-            _render_rate_limits(agent, console)
-    elif name in {"/ratelimit", "/rate-limit", "/rate"}:
-        _render_rate_limits(agent, console)
     elif name == "/memory":
         store = agent.knowledge
         if arg in {"dedupe", "dedup"}:
@@ -514,11 +409,8 @@ def _make_session(agent: Agent | None = None):
         from prompt_toolkit.styles import Style
 
         ensure_dirs()
-        style = Style.from_dict({"arrow": "#22d3ee bold", "toolbar": "#6b7280", "": "#e5e7eb"})
-        kwargs = {}
-        if agent is not None:
-            kwargs["bottom_toolbar"] = lambda: [("class:toolbar", _rate_limit_summary(agent))]
-        return PromptSession(history=FileHistory(str(HISTORY_FILE)), style=style, **kwargs)
+        style = Style.from_dict({"arrow": "#22d3ee bold", "": "#e5e7eb"})
+        return PromptSession(history=FileHistory(str(HISTORY_FILE)), style=style)
     except Exception:  # noqa: BLE001
         return None
 
@@ -572,15 +464,12 @@ def run_repl(agent: Agent, console: Console) -> None:
             continue
         try:
             agent.run_turn(text)
-            _render_rate_limit_warning(agent, console)
         except KeyboardInterrupt:
             console.print("\n[#FBBF24]interrupted[/]")
         except Exception as e:  # noqa: BLE001
             console.print(f"[#F87171]error:[/] {type(e).__name__}: {e}")
     agent.shutdown()
     ui.render_meta(console, agent.usage.summary(agent.cost_model))
-    if agent.config.provider == "codex":
-        _render_rate_limits(agent, console)
     console.print("[#22d3ee]✦ until next time.[/]")
 
 
@@ -816,15 +705,12 @@ def main(argv: list[str] | None = None) -> int:
         prompt = " ".join(args.prompt)
         try:
             agent.run_turn(prompt)
-            _render_rate_limit_warning(agent, console)
         except KeyboardInterrupt:
             console.print("\n[#FBBF24]interrupted[/]")
             agent.shutdown()
             return 130
         agent.shutdown()
         ui.render_meta(console, agent.usage.summary(agent.cost_model))
-        if agent.config.provider == "codex":
-            _render_rate_limits(agent, console)
         return 0
 
     run_repl(agent, console)

@@ -59,6 +59,33 @@ class OpenAIBackend(Backend):
                 "content": content,
             })
 
+    def _heal_dangling_calls(self) -> None:
+        """Ensure every assistant tool_call has a matching tool message.
+
+        chat/completions rejects an assistant message whose tool_calls are not
+        each answered by a following tool message. That can happen if a tool run
+        was interrupted (Ctrl-C) before its result was recorded. Insert a
+        placeholder tool message for any orphan so we can recover."""
+        answered = {
+            m.get("tool_call_id")
+            for m in self.messages
+            if m.get("role") == "tool"
+        }
+        healed: list[dict] = []
+        for m in self.messages:
+            healed.append(m)
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    cid = tc.get("id")
+                    if cid and cid not in answered:
+                        healed.append({
+                            "role": "tool",
+                            "tool_call_id": cid,
+                            "content": "ERROR: tool call interrupted before it produced output.",
+                        })
+                        answered.add(cid)
+        self.messages = healed
+
     # -- generation --------------------------------------------------------
 
     def _tools(self, client_tools: list[dict]) -> list[dict]:
@@ -72,6 +99,7 @@ class OpenAIBackend(Backend):
         ]
 
     def generate(self, system, tools, view: StreamSink, effort=None, think=None) -> StepResult:
+        self._heal_dangling_calls()
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}, *self.messages],

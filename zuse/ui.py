@@ -1,4 +1,4 @@
-"""Terminal rendering: gradient banner, streaming view, tool log, todos."""
+"""Terminal rendering: clean banner, streaming view, tool log, todos."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich import box
+from rich.columns import Columns
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
 
 if TYPE_CHECKING:
@@ -35,49 +35,27 @@ ASSISTANT_STYLE = "white"
 THINKING_STYLE = "grey50"
 BANNER_STYLE = "bold white"
 
-# Wide logo — used on wide terminals.
-BANNER_WIDE = """
-                @   @@   @@   @@
-
-  @@            @@  @@   @@   @@
-                @             @
-  ==            @    @   @@   @
-                @@  @@   @@   @@      @@
-  +=     @@
-  ==            @@  @@   @@   @@      ==
-         @@                            =           @@@@@@@@    @@    @@     @@@@@@     @@@@@@
-  ==            @   @@   @@   @       +=               @@      @@    @@    @@         @     @@
-                @   @@   @@   @@      ==              @@       @@    @@      @@@@@   @@@@@@@@@
-  ==                                                @@         @@    @@          @    @
-  +=         @  @@  @@   @@   @@                   @@@@@@@@     @@@@@@@    @@@@@@@     @@@@@@
-
-@@ @@ @@ @@ @@ @@ @ @@ @@@@ @@ @@ @@ @@ @@
-          @@   @    @@    @@    @@
-       @@    @@             @      @@
-    @@      @       @@       @        @
- @@                  @                  @@
-           @                   @
-"""
-
-# Compact block logo — fallback on narrow terminals.
+# Startup logo.
 BANNER = r"""
- @@@@@@@@    @@    @@     @@@@@@     @@@@@@
-      @@      @@    @@    @@         @     @@
-     @@       @@    @@      @@@@@   @@@@@@@@@
-   @@         @@    @@          @    @
- @@@@@@@@     @@@@@@@    @@@@@@@     @@@@@@
+ ______     __  __     ______     ______    
+/\___  \   /\ \/\ \   /\  ___\   /\  ___\   
+\/_/  /__  \ \ \_\ \  \ \___  \  \ \  __\   
+  /\_____\  \ \_____\  \/\_____\  \ \_____\ 
+  \/_____/   \/_____/   \/_____/   \/_____/
 """
+
+BANNER_SMALL = "ZUSE"
 
 TOOL_ICONS = {
-    "read_file": "📖", "write_file": "✍ ", "edit_file": "✏ ", "list_directory": "📂",
-    "glob": "🔎", "grep": "🔍", "bash": "❯", "python": "🐍", "todo_write": "◷",
-    "remember": "🧠", "task": "🤖", "applescript": "🍎", "open": "↗",
-    "clipboard_read": "📋", "clipboard_write": "📋", "screenshot": "📸",
-    "notify": "🔔", "system_info": "💻", "web_search": "🌐", "web_fetch": "🌐",
-    "screen": "👁", "mouse_click": "🖱", "mouse_move": "🖱", "type_text": "⌨",
-    "key_press": "⌨", "run_background": "🚀", "bg_logs": "📜", "bg_stop": "■",
-    "bg_list": "≡", "browser_open": "🌐", "browser_read": "📄", "browser_links": "🔗",
-    "browser_click": "🖱", "browser_type": "⌨", "browser_screenshot": "📸",
+    "read_file": "read", "write_file": "write", "edit_file": "edit", "list_directory": "ls",
+    "glob": "find", "grep": "grep", "bash": "sh", "python": "py", "todo_write": "plan",
+    "remember": "memo", "task": "agent", "applescript": "mac", "open": "open",
+    "clipboard_read": "clip", "clipboard_write": "clip", "screenshot": "shot",
+    "notify": "notify", "system_info": "sys", "web_search": "web", "web_fetch": "web",
+    "screen": "screen", "mouse_click": "click", "mouse_move": "move", "type_text": "type",
+    "key_press": "key", "run_background": "run", "bg_logs": "logs", "bg_stop": "stop",
+    "bg_list": "jobs", "browser_open": "browser", "browser_read": "read", "browser_links": "links",
+    "browser_click": "click", "browser_type": "type", "browser_screenshot": "shot",
 }
 
 
@@ -118,26 +96,20 @@ def _animate_intro(console: Console, lines: list[str]) -> None:
 
 def print_banner(console: Console, config, cwd: str, animate: bool = True,
                  mcp_servers: int = 0, context_limit: int | None = None) -> None:
-    import platform
-
     from . import __version__
 
-    art = BANNER_WIDE if console.width >= 80 else BANNER
+    art = BANNER if console.width >= 56 else BANNER_SMALL
     lines = art.strip("\n").splitlines()
-    if animate and console.is_terminal:
+    if animate and console.is_terminal and console.width >= 56:
         _animate_intro(console, lines)
     else:
         console.print(Padding(_banner_text(lines), (1, 0, 0, 2)))
 
-    console.print(
-        Padding(Text("the autonomous agent that learns", style=f"italic {GREY}"), (0, 0, 1, 3))
-    )
-
     provider_label = {
-        "ollama": "local (ollama)",
-        "anthropic": "anthropic",
-        "openai": "openai",
-        "codex": "chatgpt (codex)",
+        "ollama": "Ollama",
+        "anthropic": "Anthropic",
+        "openai": "OpenAI",
+        "codex": "ChatGPT",
     }.get(config.provider, config.provider)
     provider_color = {
         "ollama": GREEN, "anthropic": SKY, "openai": GREEN, "codex": GREEN,
@@ -146,62 +118,70 @@ def print_banner(console: Console, config, cwd: str, animate: bool = True,
     home = str(Path.home())
     cwd_disp = "~" + cwd[len(home):] if cwd.startswith(home) else cwd
 
-    def on_off(value: bool) -> tuple[str, str]:
-        return ("on", GREEN) if value else ("off", GREY)
+    def status(value: bool) -> Text:
+        return Text.assemble(("● ", GREEN if value else GREY), ("on" if value else "off", "white"))
 
     if config.auto:
-        mode = ("autonomous", AMBER)
+        mode = Text("auto", style=AMBER)
     elif config.yolo:
-        mode = ("yolo (auto-approve)", RED)
+        mode = Text("yolo", style=RED)
     else:
-        mode = ("interactive", "white")
+        mode = Text("ask", style="white")
 
     if not config.compact:
-        context = ("compaction off", GREY)
+        context = Text("off", style=GREY)
     else:
         threshold = context_limit or config.compact_threshold or (
             5500 if config.is_local else 140000)
-        context = (f"~{threshold:,} tokens", FAINT)
+        context = Text(f"~{threshold:,}", style=FAINT)
 
-    rows: list[tuple[str, tuple[str, str]]] = [
-        ("provider", (provider_label, provider_color)),
-        ("model", (config.active_model, "bold white")),
-        ("directory", (cwd_disp, FAINT)),
-        ("mode", mode),
-        ("effort", (config.effort, FAINT)),
-        ("context limit", context),
-        ("thinking", on_off(config.thinking)),
-        ("learning", on_off(config.learning)),
-        ("web tools", on_off(config.enable_web)),
-        ("mcp servers", (str(mcp_servers) if mcp_servers else "none",
-                         GREEN if mcp_servers else GREY)),
-    ]
-    if platform.system() == "Darwin":
-        rows.append(("macOS control", ("available", GREEN)))
+    def kv(label: str, value) -> Text:
+        text = Text()
+        text.append(label, style=GREY)
+        text.append("  ")
+        if isinstance(value, Text):
+            text.append_text(value)
+        else:
+            text.append(str(value), style="white")
+        return text
 
-    grid = Table.grid(padding=(0, 3))
-    grid.add_column(style=GREY, justify="right")
-    grid.add_column()
-    for label, (value, color) in rows:
-        grid.add_row(label, Text(value, style=color))
+    left = Group(
+        Text.assemble(("Zuse ", f"bold {CYAN}"), (f"v{__version__}", GREY)),
+        Text("autonomous coding agent", style=FAINT),
+    )
+    right = Columns(
+        [
+            kv("model", Text(config.active_model, style="bold white")),
+            kv("provider", Text(provider_label, style=provider_color)),
+            kv("cwd", Text(cwd_disp, style=FAINT)),
+            kv("mode", mode),
+            kv("effort", Text(config.effort, style=FAINT)),
+            kv("context", context),
+            kv("thinking", status(config.thinking)),
+            kv("learning", status(config.learning)),
+            kv("web", status(config.enable_web)),
+            kv("mcp", Text(str(mcp_servers) if mcp_servers else "none", style=GREEN if mcp_servers else GREY)),
+        ],
+        equal=True,
+        expand=False,
+    )
 
     panel = Panel(
-        grid,
-        title=Text.assemble(("zuse  ", f"bold {CYAN}"), (f"v{__version__}", GREY)),
-        title_align="left",
-        box=box.ROUNDED,
-        border_style=INDIGO,
-        padding=(1, 3),
-        expand=False,
+        Group(left, Padding(right, (1, 0, 0, 0))),
+        box=box.SIMPLE,
+        border_style="grey35",
+        padding=(1, 2),
+        expand=True,
     )
     console.print(Padding(panel, (0, 0, 0, 2)))
     console.print(
         Padding(
             Text.assemble(
-                ("type a request   ", FAINT), ("/help", f"bold {CYAN}"),
-                ("   ", FAINT), ("/exit", f"bold {CYAN}"),
+                ("Enter prompt  ", FAINT), ("/help", f"bold {CYAN}"),
+                (" for commands  ", FAINT), ("/exit", f"bold {CYAN}"),
+                (" to quit", FAINT),
             ),
-            (1, 0, 1, 3),
+            (0, 0, 1, 3),
         )
     )
 
@@ -275,8 +255,8 @@ class StreamView:
             )
         if self._text:
             block = Group(
-                Text.assemble(("◆ ", CYAN), ("zuse", f"bold {CYAN}")),
-                Markdown(self._text, code_theme="monokai"),
+                Text("zuse", style=f"bold {CYAN}"),
+                Padding(Markdown(self._text, code_theme="monokai"), (0, 0, 0, 2)),
             )
             parts.append(Padding(block, (1, 0, 0, 2)))
         if not parts:
@@ -314,8 +294,8 @@ class StreamView:
             if self._text:
                 self.console.print(Padding(
                     Group(
-                        Text.assemble(("◆ ", CYAN), ("zuse", f"bold {CYAN}")),
-                        Markdown(self._text, code_theme="monokai"),
+                        Text("zuse", style=f"bold {CYAN}"),
+                        Padding(Markdown(self._text, code_theme="monokai"), (0, 0, 0, 2)),
                     ),
                     (1, 0, 0, 2),
                 ))
@@ -338,13 +318,15 @@ class NullView:
 
 def render_tool_call(console: Console, name: str, summary: str) -> None:
     if name.startswith("mcp__"):
-        icon = "🔌"
+        icon = "mcp"
         parts = name.split("__", 2)
         name = f"{parts[1]}·{parts[2]}" if len(parts) == 3 else name  # server·tool
     else:
-        icon = TOOL_ICONS.get(name, "◆")
+        icon = TOOL_ICONS.get(name, "tool")
     line = Text("  ")
-    line.append(f"{icon} ", style=ACCENT)
+    line.append("• ", style=ACCENT)
+    line.append(icon, style=FAINT)
+    line.append(" ")
     line.append(name, style="bold white")
     if summary:
         line.append("  " + summary, style=FAINT)

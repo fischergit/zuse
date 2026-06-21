@@ -260,7 +260,20 @@ class Agent:
             if not result.tool_calls:
                 break
 
-            results = [self._execute_tool(tc) for tc in result.tool_calls]
+            results: list[ToolResult] = []
+            try:
+                for tc in result.tool_calls:
+                    results.append(self._execute_tool(tc))
+            except KeyboardInterrupt:
+                # Record an output for every call so history stays balanced —
+                # the backends reject an unanswered tool call on the next turn.
+                done = {r.tool_call_id for r in results}
+                for tc in result.tool_calls:
+                    if tc.id not in done:
+                        results.append(ToolResult(
+                            tc.id, tc.name, "Interrupted by the user.", is_error=True))
+                self.backend.add_tool_results(results)
+                raise
             self.backend.add_tool_results(results)
         else:
             self.console.print("[yellow]Reached the step limit for this turn.[/]")
