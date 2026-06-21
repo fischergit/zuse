@@ -6,6 +6,7 @@ so changes can be reverted with /undo — works in any directory, no git needed.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,8 @@ class Edit:
 class EditJournal:
     def __init__(self) -> None:
         self.entries: list[Edit] = []
+        # Parallel crew specialists may edit files concurrently.
+        self._lock = threading.Lock()
 
     def record(self, path: Path, before: str | None, after: str | None) -> None:
         if before is None:
@@ -29,7 +32,8 @@ class EditJournal:
             kind = "delete"
         else:
             kind = "modify"
-        self.entries.append(Edit(Path(path), before, after, kind))
+        with self._lock:
+            self.entries.append(Edit(Path(path), before, after, kind))
 
     def can_undo(self) -> bool:
         return bool(self.entries)

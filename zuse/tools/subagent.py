@@ -48,11 +48,13 @@ class Task(Tool):
 class Crew(Tool):
     name = "crew"
     description = (
-        "Run a coordinated mini-team of specialist sub-agents for a larger task. "
-        "Use this when work can be split between roles such as planner, researcher, "
-        "coder, tester, and reviewer. Provide a clear goal and either explicit tasks "
-        "or leave tasks empty for the orchestrator to use a default plan. The crew "
-        "returns a combined report with findings, actions, verification, and next steps."
+        "Run a coordinated team of specialist sub-agents IN PARALLEL for a larger task. "
+        "Prefer this for any non-trivial goal that splits across roles such as planner, "
+        "researcher, coder, tester, reviewer, or docs — aim for several specialists (3–6) "
+        "so the work fans out. Provide a clear goal and either explicit tasks, or leave "
+        "tasks empty to let the coordinator decompose the goal into specialists for you. "
+        "The specialists run concurrently with a live progress dashboard; the crew returns "
+        "one combined report with findings, actions, verification, and next steps."
     )
     read_only = False
 

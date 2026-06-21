@@ -105,6 +105,9 @@ class Config:
     compact: bool = True             # auto-summarize history when context grows large
     compact_threshold: int = 0       # input-token trigger (0 = auto per provider)
     browser_headless: bool = True    # run the automation browser without a visible window
+    crew_concurrency: int = 4        # max specialist sub-agents running in parallel per crew
+    crew_planner: bool = True        # let a coordinator agent decompose goals into specialists
+    show_actions: bool = True        # show tool calls/output + live stream; off = only agent progress
 
     @property
     def is_local(self) -> bool:

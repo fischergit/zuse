@@ -88,6 +88,9 @@ class ShellSession:
         if self.proc:
             try:
                 self.proc.kill()
+                # Reap it so crews (which spin up and tear down many short-lived
+                # shells) don't accumulate zombie processes for the session.
+                self.proc.wait(timeout=2)
             except Exception:  # noqa: BLE001
                 pass
 

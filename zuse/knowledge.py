@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -61,6 +62,8 @@ class KnowledgeStore:
         self.path = path
         self.embedder = embedder
         self.entries: list[Entry] = self._load()
+        # Serializes writes: parallel crew specialists may `remember` at once.
+        self._lock = threading.Lock()
 
     # -- persistence -------------------------------------------------------
 
@@ -92,22 +95,23 @@ class KnowledgeStore:
         if kind not in KINDS:
             kind = "fact"
         new_tokens = _tokens(text)
-        for e in self.entries:  # dedupe near-duplicates
-            if _overlap(new_tokens, e.tokens()) >= _DUP_THRESHOLD:
-                e.uses += 1
-                self._save()
-                return None
-        entry = Entry(
-            id=uuid.uuid4().hex[:12],
-            kind=kind,
-            text=text,
-            tags=tags or [],
-            created=datetime.now().strftime("%Y-%m-%d"),
-        )
-        if self.embedder is not None:
-            entry.embedding = self.embedder.embed(text)
-        self.entries.append(entry)
-        self._save()
+        with self._lock:
+            for e in self.entries:  # dedupe near-duplicates
+                if _overlap(new_tokens, e.tokens()) >= _DUP_THRESHOLD:
+                    e.uses += 1
+                    self._save()
+                    return None
+            entry = Entry(
+                id=uuid.uuid4().hex[:12],
+                kind=kind,
+                text=text,
+                tags=tags or [],
+                created=datetime.now().strftime("%Y-%m-%d"),
+            )
+            if self.embedder is not None:
+                entry.embedding = self.embedder.embed(text)
+            self.entries.append(entry)
+            self._save()
         return entry
 
     def clear(self) -> int:

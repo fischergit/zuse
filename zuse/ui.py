@@ -13,9 +13,13 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
+from .agentpool import DONE, FAILED, QUEUED, RUNNING
+
 if TYPE_CHECKING:
+    from .agentpool import AgentRegistry, AgentRun
     from .tools.base import TodoItem
 
 # --- palette (truecolor) --------------------------------------------------
@@ -209,6 +213,19 @@ class _Pulse:
 # --- streaming assistant view --------------------------------------------
 
 
+def render_answer(console: Console, text: str) -> None:
+    """Print the assistant's final answer as a 'zuse' markdown block."""
+    console.print(
+        Padding(
+            Group(
+                Text("zuse", style=f"bold {CYAN}"),
+                Padding(Markdown(text, code_theme="monokai"), (0, 0, 0, 2)),
+            ),
+            (1, 0, 0, 2),
+        )
+    )
+
+
 class StreamView:
     """Renders one assistant turn live: an animated pulse while waiting, then a
     dim thinking section, then markdown response text. Falls back to plain
@@ -292,13 +309,7 @@ class StreamView:
         if self._live:
             self._live.__exit__(*exc)
             if self._text:
-                self.console.print(Padding(
-                    Group(
-                        Text("zuse", style=f"bold {CYAN}"),
-                        Padding(Markdown(self._text, code_theme="monokai"), (0, 0, 0, 2)),
-                    ),
-                    (1, 0, 0, 2),
-                ))
+                render_answer(self.console, self._text)
         else:
             self.console.print()
 
@@ -311,6 +322,182 @@ class NullView:
 
     def on_text(self, delta: str) -> None:
         pass
+
+
+# --- live multi-agent crew dashboard -------------------------------------
+
+
+def _trunc(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _progress_bar(fraction: float, width: int = 10) -> str:
+    fraction = max(0.0, min(1.0, fraction))
+    filled = int(round(fraction * width))
+    return "▰" * filled + "▱" * (width - filled)
+
+
+_STATUS_GLYPH = {QUEUED: ("○", GREY), RUNNING: ("◐", CYAN), DONE: ("●", GREEN), FAILED: ("✗", RED)}
+
+
+class TurnProgress:
+    """Compact, animated one-line indicator of which agent is running and how far
+    along it is — shown in place of the verbose tool/stream log in quiet mode
+    (config.show_actions = False). Reads the live todo list for 'how far'; the
+    spinner animates from the clock via the Live's auto-refresh, so it keeps
+    moving even while the model call blocks."""
+
+    def __init__(
+        self, console: Console, todos: "list[TodoItem]", label: str = "zuse", step: int = 0
+    ) -> None:
+        self.console = console
+        self.todos = todos
+        self.label = label
+        self.step = step
+        self.activity = "working"
+        self._live: Live | None = None
+
+    def __enter__(self) -> "TurnProgress":
+        self._live = Live(self, console=self.console, refresh_per_second=12, transient=True)
+        self._live.__enter__()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._live:
+            self._live.__exit__(*exc)
+            self._live = None
+
+    def update(self, activity: str | None = None, step: int | None = None) -> None:
+        if activity is not None:
+            self.activity = activity
+        if step is not None:
+            self.step = step
+
+    def __rich_console__(self, console, options):
+        frame = _BRAILLE_FRAMES[int(time.monotonic() * 12) % len(_BRAILLE_FRAMES)]
+        total = len(self.todos)
+        done = sum(1 for t in self.todos if t.status == "done")
+        line = Text()
+        line.append(frame + " ", style=f"bold {CYAN}")
+        line.append(self.label, style="bold white")
+        line.append("  " + _trunc(self.activity, 48), style=GREY)
+        if total:
+            line.append("   " + _progress_bar(done / total, 8), style=CYAN)
+            line.append(f" {done}/{total}", style=FAINT)
+        elif self.step:
+            line.append(f"   step {self.step}", style=FAINT)
+        yield Padding(line, (0, 0, 0, 2))
+
+
+class CrewDashboard:
+    """Live panel showing every specialist sub-agent in a crew — its status,
+    progress, and current activity — refreshing in place while they run.
+
+    Mirrors `StreamView`'s transient `Live` so the refreshing area never stacks;
+    on exit it prints one static summary so the finished crew stays on screen.
+    The renderable reads a fresh `registry.snapshot()` each refresh and animates
+    the running spinner from the clock (no background thread)."""
+
+    def __init__(self, console: Console, registry: "AgentRegistry", goal: str = "") -> None:
+        self.console = console
+        self.registry = registry
+        self.goal = goal
+        self._live: Live | None = None
+
+    def __enter__(self) -> "CrewDashboard":
+        self._live = Live(
+            self,
+            console=self.console,
+            refresh_per_second=12,
+            transient=True,
+            vertical_overflow="visible",
+        )
+        self._live.__enter__()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._live:
+            self._live.__exit__(*exc)
+            self._live = None
+        self.console.print(Padding(self._panel(final=True), (1, 0, 0, 2)))
+
+    def __rich_console__(self, console, options):
+        yield Padding(self._panel(final=False), (1, 0, 0, 2))
+
+    def _row(self, run: "AgentRun", final: bool) -> tuple[Text, Text, Text, Text, Text]:
+        if run.status == RUNNING and not final:
+            frame = _BRAILLE_FRAMES[int(time.monotonic() * 12) % len(_BRAILLE_FRAMES)]
+            glyph = Text(frame, style=f"bold {CYAN}")
+        else:
+            ch, col = _STATUS_GLYPH.get(run.status, ("○", GREY))
+            glyph = Text(ch, style=col)
+
+        name = Text()
+        name.append(_trunc(run.role, 16), style="bold white")
+        if run.title and run.title != run.role:
+            name.append("  " + _trunc(run.title, 30), style=FAINT)
+
+        bar_color = GREEN if run.status == DONE else RED if run.status == FAILED else CYAN
+        bar = Text(_progress_bar(run.fraction), style=bar_color)
+        if run.status in (RUNNING, QUEUED):  # a finished bar speaks for itself
+            if run.todos_total:
+                bar.append(f" {run.todos_done}/{run.todos_total}", style=FAINT)
+            elif run.max_steps:
+                bar.append(f" {run.step}/{run.max_steps}", style=FAINT)
+
+        if run.status == FAILED:
+            activity = Text(_trunc(run.error or "failed", 48), style=RED)
+        elif run.status == DONE:
+            activity = Text("done", style=GREEN)
+        else:
+            activity = Text(_trunc(run.activity or "…", 48), style=GREY)
+
+        elapsed = Text(f"{run.elapsed:3.0f}s", style=FAINT)
+        return glyph, name, bar, activity, elapsed
+
+    def _panel(self, final: bool) -> Panel:
+        runs = self.registry.snapshot()
+        grid = Table.grid(padding=(0, 2), expand=True)
+        grid.add_column(no_wrap=True)              # status glyph
+        grid.add_column(no_wrap=True)              # role + title
+        grid.add_column(no_wrap=True)              # progress bar
+        grid.add_column(ratio=1)                   # current activity
+        grid.add_column(no_wrap=True, justify="right")  # elapsed
+        if runs:
+            for run in runs:
+                grid.add_row(*self._row(run, final))
+        else:
+            grid.add_row(Text("…", style=GREY), Text("starting crew", style=FAINT),
+                         Text(""), Text(""), Text(""))
+
+        counts = {QUEUED: 0, RUNNING: 0, DONE: 0, FAILED: 0}
+        for run in runs:
+            counts[run.status] = counts.get(run.status, 0) + 1
+        footer = Text()
+        footer.append(f"{counts[RUNNING]} running", style=CYAN)
+        footer.append("  ·  ", style=FAINT)
+        footer.append(f"{counts[QUEUED]} queued", style=GREY)
+        footer.append("  ·  ", style=FAINT)
+        footer.append(f"{counts[DONE]} done", style=GREEN)
+        if counts[FAILED]:
+            footer.append("  ·  ", style=FAINT)
+            footer.append(f"{counts[FAILED]} failed", style=RED)
+        total_elapsed = max((r.elapsed for r in runs), default=0.0)
+        footer.append(f"   {total_elapsed:.0f}s", style=FAINT)
+
+        title = Text.assemble(("⛓ crew", f"bold {VIOLET}"), (f"  {len(runs)} agents", FAINT))
+        if self.goal:
+            title.append("  ·  " + _trunc(self.goal, 40), style=FAINT)
+        return Panel(
+            Group(grid, Padding(footer, (1, 0, 0, 0))),
+            title=title,
+            title_align="left",
+            box=box.ROUNDED,
+            border_style=VIOLET,
+            padding=(1, 2),
+            expand=False,
+        )
 
 
 # --- tool activity log ----------------------------------------------------

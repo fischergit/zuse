@@ -48,10 +48,12 @@ class TodoWrite(Tool):
                 raise ToolError(f"Invalid status {status!r}.")
             new_todos.append(TodoItem(text=it["text"], status=status))
         ctx.todos[:] = new_todos
-        # Render so the user sees the plan immediately.
-        from ..ui import render_todos
+        # Render so the user sees the plan immediately — unless quiet mode is on,
+        # where the compact agent-progress line reflects todo completion instead.
+        if getattr(ctx.config, "show_actions", True):
+            from ..ui import render_todos
 
-        render_todos(ctx.console, ctx.todos)
+            render_todos(ctx.console, ctx.todos)
         done = sum(1 for t in new_todos if t.status == "done")
         return f"Task list updated ({done}/{len(new_todos)} done)."
 

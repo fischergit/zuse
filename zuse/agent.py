@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
 from rich.console import Console
 
 from . import ui
+from .agentpool import AgentRegistry
 from .config import (
     CONFIG_DIR,
     KNOWLEDGE_FILE,
@@ -114,6 +116,10 @@ class Agent:
         self._last_ctx = 0  # approx input tokens of the last request, for compaction
         self._turn_memory = ""  # internal recalled facts/procedures for the active turn
         self.stream_view_factory = None  # optional callable(console, markdown, show_thinking) -> StreamSink
+        # Auto-approving permissions for crew specialists (built lazily). Crews
+        # run autonomously, so their tools never prompt on stdin — which would
+        # collide with the live dashboard and across parallel threads.
+        self._crew_permissions: PermissionManager | None = None
         self.ctx = ToolContext(
             cwd=Path.cwd(),
             console=self.console,
@@ -225,6 +231,33 @@ class Agent:
         self._reflect(user_input, [text] if text else [], tools_used)
         return text
 
+    def _turn_system(self) -> str:
+        """System prompt for the active turn, plus any recalled knowledge."""
+        system = self.system
+        if getattr(self, "_turn_memory", ""):
+            system += (
+                "\n\n# Recalled relevant knowledge for this turn\n"
+                "Use this internal context when applicable, but do not "
+                "quote or display it unless it directly helps the user:\n"
+                + self._turn_memory
+            )
+        return system
+
+    def _generate_step(self, tools: list[dict[str, Any]], step: int):
+        """One model call. In normal mode it streams live; in quiet mode
+        (config.show_actions = False) it runs silently behind a compact
+        'which agent is running and how far' progress line instead."""
+        if self.config.show_actions:
+            view_factory = self.stream_view_factory or ui.StreamView
+            with view_factory(
+                self.console,
+                markdown=self.config.stream_markdown,
+                show_thinking=self.config.show_thinking,
+            ) as view:
+                return self.backend.generate(self._turn_system(), tools, view)
+        with ui.TurnProgress(self.console, self.ctx.todos, step=step):
+            return self.backend.generate(self._turn_system(), tools, ui.NullView())
+
     def _agent_loop(self) -> tuple[str, list[str]]:
         """Run the model→tools loop until the assistant stops calling tools.
         Returns the final assistant text and the list of tools used."""
@@ -232,22 +265,8 @@ class Agent:
         last_text = ""
         used: list[str] = []
 
-        for _ in range(MAX_STEPS):
-            view_factory = self.stream_view_factory or ui.StreamView
-            with view_factory(
-                self.console,
-                markdown=self.config.stream_markdown,
-                show_thinking=self.config.show_thinking,
-            ) as view:
-                system = self.system
-                if getattr(self, "_turn_memory", ""):
-                    system += (
-                        "\n\n# Recalled relevant knowledge for this turn\n"
-                        "Use this internal context when applicable, but do not "
-                        "quote or display it unless it directly helps the user:\n"
-                        + self._turn_memory
-                    )
-                result = self.backend.generate(system, tools, view)
+        for step in range(1, MAX_STEPS + 1):
+            result = self._generate_step(tools, step)
             self.usage.add(result.usage)
             self._last_ctx = _ctx_tokens(result.usage)
             self.backend.add_assistant(result)
@@ -277,6 +296,10 @@ class Agent:
             self.backend.add_tool_results(results)
         else:
             self.console.print("[yellow]Reached the step limit for this turn.[/]")
+
+        # Quiet mode streamed nothing live, so print the final answer once.
+        if not self.config.show_actions and last_text:
+            ui.render_answer(self.console, last_text)
         return last_text, used
 
     # -- autonomous goal mode ---------------------------------------------
@@ -320,17 +343,23 @@ class Agent:
     # -- tool execution ----------------------------------------------------
 
     def _execute_tool(self, tc: ToolCall) -> ToolResult:
+        # Quiet mode (show_actions = False) hides the per-tool call/output log;
+        # the user sees only the agent-progress line and crew dashboards.
+        show = self.config.show_actions
         tool = self.registry.get(tc.name)
         if tool is None:
-            ui.render_tool_call(self.console, tc.name, "(unknown tool)")
+            if show:
+                ui.render_tool_call(self.console, tc.name, "(unknown tool)")
             return ToolResult(tc.id, tc.name, f"Unknown tool: {tc.name}", is_error=True)
 
-        ui.render_tool_call(self.console, tc.name, tool.call_summary(tc.input))
+        if show:
+            ui.render_tool_call(self.console, tc.name, tool.call_summary(tc.input))
 
         if tool.requires_permission:
             preview = tool.permission_preview(tc.input, self.ctx)
             if self.permissions.request(tc.name, tc.name, preview) is Decision.DENY:
-                ui.render_tool_denied(self.console, tc.name)
+                if show:
+                    ui.render_tool_denied(self.console, tc.name)
                 return ToolResult(
                     tc.id, tc.name,
                     "User denied this action. Adjust your approach or ask the user.",
@@ -340,15 +369,17 @@ class Agent:
         try:
             output = tool.run(tc.input, self.ctx)
         except ToolError as e:
-            ui.render_tool_result(self.console, str(e), is_error=True)
+            if show:
+                ui.render_tool_result(self.console, str(e), is_error=True)
             return ToolResult(tc.id, tc.name, str(e), is_error=True)
         except Exception as e:  # noqa: BLE001
             msg = f"{type(e).__name__}: {e}"
-            ui.render_tool_result(self.console, msg, is_error=True)
+            if show:
+                ui.render_tool_result(self.console, msg, is_error=True)
             return ToolResult(tc.id, tc.name, msg, is_error=True)
 
         text, images = (output.text, output.images) if isinstance(output, ToolOutput) else (output, [])
-        if tc.name != "todo_write":  # todo_write renders its own panel
+        if show and tc.name != "todo_write":  # todo_write renders its own panel
             shown = text + (f"  ⟨+{len(images)} image⟩" if images else "")
             ui.render_tool_result(self.console, shown)
         return ToolResult(tc.id, tc.name, text, images=images)
@@ -416,15 +447,77 @@ class Agent:
         """
         return [t for t in self.tools if not isinstance(t, (Task, Crew))]
 
-    def _run_subagent(self, instructions: str, max_steps: int) -> str:
-        return self._run_specialist(
-            role="sub-agent",
-            title="Focused delegated task",
-            instructions=instructions,
-            max_steps=max_steps,
+    def _specialist_ctx(self) -> ToolContext:
+        """An isolated tool context for a crew specialist: its own shell session
+        and todo list (so parallel agents don't interleave shell state), auto-
+        approving permissions, and no ability to spawn further agents (two-level
+        cap). Knowledge/background/journal/browser are shared (all guarded)."""
+        if self._crew_permissions is None:
+            self._crew_permissions = PermissionManager(self.console, yolo=True)
+        return ToolContext(
+            cwd=self.ctx.cwd,
+            console=self.console,
+            permissions=self._crew_permissions,
+            config=self.config,
+            todos=[],
+            knowledge=self.knowledge,
+            shell=ShellSession(self.ctx.cwd),
+            background=self.background,
+            journal=self.journal,
+            browser=self.browser,
+            spawn_subagent=None,
+            spawn_crew=None,
         )
 
-    def _run_specialist(self, role: str, title: str, instructions: str, max_steps: int) -> str:
+    def _run_subagent(self, instructions: str, max_steps: int) -> str:
+        """The `task` tool: one focused sub-agent, run inline (not in a crew)."""
+        with self.console.status("[magenta]sub-agent working…[/]", spinner="dots"):
+            return self._agent_subloop(
+                "sub-agent", "Focused delegated task", instructions, max_steps, self.ctx
+            )
+
+    def _run_specialist(
+        self,
+        rid: str,
+        registry: AgentRegistry,
+        role: str,
+        title: str,
+        instructions: str,
+        max_steps: int,
+    ) -> str:
+        """Run one crew specialist in its own isolated context, reporting live
+        progress into `registry`. Never raises — a failing specialist is recorded
+        and returns an error report so it can't take down the rest of the crew."""
+        registry.start(rid)
+        ctx = self._specialist_ctx()
+        try:
+            text = self._agent_subloop(role, title, instructions, max_steps, ctx, registry, rid)
+            registry.finish(rid, ok=True)
+            return text
+        except Exception as e:  # noqa: BLE001
+            registry.finish(rid, ok=False, error=str(e))
+            return f"({role} failed: {e})"
+        finally:
+            try:
+                ctx.shell.kill()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _agent_subloop(
+        self,
+        role: str,
+        title: str,
+        instructions: str,
+        max_steps: int,
+        ctx: ToolContext,
+        registry: AgentRegistry | None = None,
+        rid: str | None = None,
+    ) -> str:
+        """Shared nested agent loop used by both `task` and crew specialists.
+
+        Runs a fresh backend's tool loop against `ctx`. When a `registry`/`rid`
+        are given, reports step count, current activity, and todo progress so the
+        crew dashboard can show how far along the agent is."""
         sub = self.backend_factory()
         sub_tools = self._subagent_tools()
         sub_registry = build_registry(sub_tools)
@@ -440,30 +533,36 @@ class Agent:
         view = ui.NullView()
         final_text = ""
 
-        with self.console.status(f"[magenta]{role} working…[/]", spinner="dots"):
-            for _ in range(max(1, max_steps)):
-                result: StepResult = sub.generate(sub_system, schemas, view, effort="medium")
-                self.usage.add(result.usage)
-                sub.add_assistant(result)
-                if result.text:
-                    final_text = result.text
-                if result.stop_reason == "pause_turn":
+        for step in range(1, max(1, max_steps) + 1):
+            if registry is not None:
+                registry.update(rid, step=step, activity="thinking…")
+            result: StepResult = sub.generate(sub_system, schemas, view, effort="medium")
+            self.usage.add(result.usage)
+            sub.add_assistant(result)
+            if result.text:
+                final_text = result.text
+            if result.stop_reason == "pause_turn":
+                continue
+            if not result.tool_calls:
+                break
+            results = []
+            for tc in result.tool_calls:
+                tool = sub_registry.get(tc.name)
+                if tool is None:
+                    results.append(ToolResult(tc.id, tc.name, f"Unknown tool: {tc.name}", True))
                     continue
-                if not result.tool_calls:
-                    break
-                results = []
-                for tc in result.tool_calls:
-                    tool = sub_registry.get(tc.name)
-                    if tool is None:
-                        results.append(ToolResult(tc.id, tc.name, f"Unknown tool: {tc.name}", True))
-                        continue
-                    try:
-                        out = tool.run(tc.input, self.ctx)
-                        text, images = (out.text, out.images) if isinstance(out, ToolOutput) else (out, [])
-                        results.append(ToolResult(tc.id, tc.name, text, images=images))
-                    except Exception as e:  # noqa: BLE001
-                        results.append(ToolResult(tc.id, tc.name, str(e), True))
-                sub.add_tool_results(results)
+                if registry is not None:
+                    registry.update(rid, activity=f"{tc.name} · {tool.call_summary(tc.input)}")
+                try:
+                    out = tool.run(tc.input, ctx)
+                    text, images = (out.text, out.images) if isinstance(out, ToolOutput) else (out, [])
+                    results.append(ToolResult(tc.id, tc.name, text, images=images))
+                except Exception as e:  # noqa: BLE001
+                    results.append(ToolResult(tc.id, tc.name, str(e), True))
+            sub.add_tool_results(results)
+            if registry is not None:
+                done = sum(1 for t in ctx.todos if t.status == "done")
+                registry.update(rid, todos_done=done, todos_total=len(ctx.todos))
 
         return final_text or f"({role} returned no text)"
 
@@ -519,11 +618,58 @@ class Agent:
             },
         ]
 
+    def _plan_crew(self, goal: str, mode: str, max_steps: int) -> list[dict[str, Any]]:
+        """Coordinator step: let an agent decompose the goal into 3–6 parallel
+        specialists. Falls back to the static plan when disabled or on failure."""
+        if not getattr(self.config, "crew_planner", True):
+            return self._default_crew_tasks(goal, mode, max_steps)
+        planner_system = (
+            "You are Zuse's crew coordinator. Decompose the goal into a small team of "
+            "specialist sub-agents that can work IN PARALLEL. Pick 3–6 specialists with "
+            "distinct roles (e.g. planner, researcher, coder, tester, reviewer, docs). "
+            "Each gets standalone instructions — they do not share context or talk to "
+            "each other, so make each task self-contained. Respond with ONLY a JSON array "
+            "of objects with keys: role, title, instructions."
+        )
+        sub = self.backend_factory()
+        sub.add_user(f"Goal: {goal}\nMode: {mode}\n\nReturn 3-6 specialists as a JSON array.")
+        try:
+            result = sub.generate(planner_system, [], ui.NullView(), effort="low", think=False)
+            self.usage.add(result.usage)
+            planned = self._parse_crew_plan(result.text, goal, max_steps)
+        except Exception:  # noqa: BLE001
+            planned = []
+        return planned or self._default_crew_tasks(goal, mode, max_steps)
+
+    def _parse_crew_plan(self, raw: str, goal: str, max_steps: int) -> list[dict[str, Any]]:
+        match = re.search(r"\[.*\]", raw, re.DOTALL)
+        if not match:
+            return []
+        try:
+            items = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return []
+        plan: list[dict[str, Any]] = []
+        for i, raw_task in enumerate(items if isinstance(items, list) else [], start=1):
+            if not isinstance(raw_task, dict):
+                continue
+            role = str(raw_task.get("role") or f"agent-{i}").strip()
+            title = str(raw_task.get("title") or role).strip()
+            instructions = str(raw_task.get("instructions") or "").strip()
+            if not instructions:
+                instructions = f"Work on this part of the goal: {goal}"
+            plan.append(
+                {"role": role, "title": title, "instructions": instructions, "max_steps": max_steps}
+            )
+            if len(plan) >= 6:  # cap the fan-out
+                break
+        return plan
+
     def _normalize_crew_tasks(
         self, goal: str, tasks: list[dict[str, Any]], mode: str, max_steps: int
     ) -> list[dict[str, Any]]:
         if not tasks:
-            return self._default_crew_tasks(goal, mode, max_steps)
+            return self._plan_crew(goal, mode, max_steps)
         normalized = []
         for i, raw in enumerate(tasks, start=1):
             if not isinstance(raw, dict):
@@ -544,19 +690,33 @@ class Agent:
         self, goal: str, tasks: list[dict[str, Any]], mode: str = "auto", max_steps: int = 10
     ) -> str:
         plan = self._normalize_crew_tasks(goal, tasks, mode, max_steps)
-        reports: list[str] = []
-        self.console.print(f"[magenta]crew:[/] {len(plan)} specialist(s) for {goal[:90]}")
-        for i, task in enumerate(plan, start=1):
-            role = str(task["role"])
-            title = str(task["title"])
-            self.console.print(f"  [cyan]{i}. {role}[/] — {title}")
-            report = self._run_specialist(
-                role=role,
-                title=title,
-                instructions=str(task["instructions"]),
-                max_steps=int(task["max_steps"]),
-            )
-            reports.append(f"## {i}. {role}: {title}\n{report.strip()}")
+        registry = AgentRegistry()
+        runs = [
+            (registry.create(str(t["role"]), str(t["title"]), int(t["max_steps"])), t)
+            for t in plan
+        ]
+        reports: list[str] = [""] * len(runs)
+        concurrency = max(1, int(getattr(self.config, "crew_concurrency", 4)))
+
+        with ui.CrewDashboard(self.console, registry, goal):
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                future_to_idx = {
+                    pool.submit(
+                        self._run_specialist,
+                        rid,
+                        registry,
+                        str(task["role"]),
+                        str(task["title"]),
+                        str(task["instructions"]),
+                        int(task["max_steps"]),
+                    ): idx
+                    for idx, (rid, task) in enumerate(runs)
+                }
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    task = runs[idx][1]
+                    report = future.result()  # never raises; specialist captures errors
+                    reports[idx] = f"## {idx + 1}. {task['role']}: {task['title']}\n{report.strip()}"
 
         synthesis = (
             "You are Zuse's crew coordinator. Synthesize the specialist reports into "

@@ -35,6 +35,7 @@ SLASH_HELP = [
     ("/login", "Sign in with ChatGPT (OpenAI Codex OAuth)"),
     ("/effort <level>", "Set reasoning effort: low|medium|high|xhigh|max (cloud)"),
     ("/thinking", "Toggle visible thinking"),
+    ("/quiet", "Toggle quiet mode: hide tool activity, show only agent progress"),
     ("/learning", "Toggle continuous learning (reflection after each turn)"),
     ("/auto", "Toggle auto mode: act autonomously + auto-approve actions"),
     ("/yolo", "Toggle auto-approve for all tool permissions"),
@@ -275,6 +276,13 @@ def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
     elif name == "/thinking":
         cfg.show_thinking = not cfg.show_thinking
         console.print(f"Visible thinking: {'on' if cfg.show_thinking else 'off'}")
+    elif name == "/quiet":
+        cfg.show_actions = not cfg.show_actions
+        cfg.save()  # standing preference — persist across sessions
+        if cfg.show_actions:
+            console.print("Quiet mode [bold]off[/] — showing tool activity again.")
+        else:
+            console.print("Quiet mode [bold]on[/] — showing only which agent is running and how far.")
     elif name == "/learning":
         cfg.learning = not cfg.learning
         console.print(f"Continuous learning: {'on' if cfg.learning else 'off'}")
@@ -584,6 +592,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-thinking", action="store_true", help="Disable extended thinking.")
     p.add_argument("--no-web", action="store_true", help="Disable web search/fetch tools.")
     p.add_argument("--no-markdown", action="store_true", help="Disable live markdown streaming.")
+    p.add_argument("--quiet", action="store_true",
+                   help="Hide tool activity; show only which agent is running and how far.")
     p.add_argument("--browser-window", action="store_true",
                    help="Show a visible browser window (default: headless).")
     p.add_argument("--no-learning", action="store_true", help="Disable continuous learning.")
@@ -611,6 +621,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg.enable_web = False
     if args.no_markdown:
         cfg.stream_markdown = False
+    if args.quiet:
+        cfg.show_actions = False
     if args.browser_window:
         cfg.browser_headless = False
     if args.no_learning:

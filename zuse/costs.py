@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 
 from .config import PRICING
@@ -15,13 +16,18 @@ class Usage:
     cache_creation_tokens: int = 0
     requests: int = 0
 
+    def __post_init__(self) -> None:
+        # Guards accumulation: parallel crew specialists call add() concurrently.
+        self._lock = threading.Lock()
+
     def add(self, usage_obj) -> None:
         """Accumulate from an Anthropic `usage` object."""
-        self.requests += 1
-        self.input_tokens += getattr(usage_obj, "input_tokens", 0) or 0
-        self.output_tokens += getattr(usage_obj, "output_tokens", 0) or 0
-        self.cache_read_tokens += getattr(usage_obj, "cache_read_input_tokens", 0) or 0
-        self.cache_creation_tokens += getattr(usage_obj, "cache_creation_input_tokens", 0) or 0
+        with self._lock:
+            self.requests += 1
+            self.input_tokens += getattr(usage_obj, "input_tokens", 0) or 0
+            self.output_tokens += getattr(usage_obj, "output_tokens", 0) or 0
+            self.cache_read_tokens += getattr(usage_obj, "cache_read_input_tokens", 0) or 0
+            self.cache_creation_tokens += getattr(usage_obj, "cache_creation_input_tokens", 0) or 0
 
     def cost(self, model: str | None) -> float:
         price = PRICING.get(model or "")
