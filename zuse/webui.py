@@ -136,10 +136,47 @@ HTML = r"""
       z-index: 2;
     }
     .topbar strong { color: var(--text); font-family: var(--mono); letter-spacing: -.02em; }
+    .office-panel {
+      height: 280px;
+      margin: 16px clamp(18px, 5vw, 64px) 0;
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    .office-head { display:flex; justify-content:space-between; align-items:center; gap: 12px; padding: 11px 14px; border-bottom: 1px solid var(--line); background: #fbfcfe; }
+    .office-title { font-family: var(--mono); font-size: 12px; font-weight: 900; letter-spacing: .03em; }
+    .office-meta { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+    .office-scene { position: relative; perspective: 760px; background: linear-gradient(90deg, rgba(148,163,184,.12) 1px, transparent 1px), linear-gradient(rgba(148,163,184,.12) 1px, transparent 1px), #f8fafc; background-size: 34px 34px; overflow: hidden; }
+    .office-room { position:absolute; inset: 14px 20px 24px; transform-style: preserve-3d; transform: rotateX(58deg) rotateZ(-34deg) translateY(24px); }
+    .office-floor { position:absolute; inset: 14px 20px; border: 1px solid #cbd5e1; border-radius: 16px; background: #eef2f7; box-shadow: inset 0 0 0 1px rgba(255,255,255,.8), 0 18px 35px rgba(15,23,42,.10); }
+    .desk, .agent3d { position:absolute; transform-style: preserve-3d; }
+    .desk { width: 72px; height: 44px; border-radius: 8px; background: #e2e8f0; border: 1px solid #cbd5e1; box-shadow: 8px 10px 0 rgba(100,116,139,.14); }
+    .agent3d { width: 42px; height: 74px; margin-left: -21px; margin-top: -37px; cursor: pointer; }
+    .agent3d .halo { position:absolute; left: 3px; bottom: 0; width: 36px; height: 18px; border-radius: 999px; background: rgba(29,78,216,.14); border: 1px solid rgba(29,78,216,.32); transform: translateZ(-1px); }
+    .agent3d.running .halo { animation: haloPulse 1.2s infinite; background: rgba(29,78,216,.20); }
+    .agent3d.done .halo { background: rgba(21,128,61,.16); border-color: rgba(21,128,61,.30); }
+    .agent3d.failed .halo { background: rgba(185,28,28,.16); border-color: rgba(185,28,28,.30); }
+    @keyframes haloPulse { 50% { transform: translateZ(-1px) scale(1.18); opacity: .55; } }
+    .agent3d .body { position:absolute; left: 11px; bottom: 17px; width: 20px; height: 30px; border-radius: 8px 8px 5px 5px; background:#1d4ed8; border:1px solid rgba(15,23,42,.18); }
+    .agent3d.root .body { background:#111827; }
+    .agent3d.queued .body { background:#64748b; }
+    .agent3d.done .body { background:#15803d; }
+    .agent3d.failed .body { background:#b91c1c; }
+    .agent3d .head { position:absolute; left: 10px; bottom: 48px; width: 22px; height: 22px; border-radius: 50%; background:#f1c7a6; border:1px solid rgba(15,23,42,.16); }
+    .agent3d .leg-l, .agent3d .leg-r { position:absolute; bottom: 8px; width: 7px; height: 15px; border-radius: 4px; background:#334155; }
+    .agent3d .leg-l { left: 12px; } .agent3d .leg-r { right: 12px; }
+    .agent3d .name { position:absolute; left: 50%; bottom: 73px; transform: translateX(-50%) rotateZ(34deg) rotateX(-58deg); white-space: nowrap; max-width: 150px; overflow:hidden; text-overflow:ellipsis; background:#ffffff; border:1px solid var(--line); border-radius: 999px; padding: 3px 7px; color:#334155; font-family:var(--mono); font-size:10px; box-shadow:var(--shadow); }
+    .connector { position:absolute; height:2px; background:#cbd5e1; transform-origin:left center; }
+    .agent-detail { position:absolute; right: 14px; bottom: 12px; width: min(330px, calc(100% - 28px)); background:#ffffff; border:1px solid var(--line); border-radius: 12px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(15,23,42,.10); font-size: 12px; line-height:1.4; }
+    .agent-detail b { font-family:var(--mono); }
     .chat {
       flex: 1;
       overflow: auto;
-      padding: 26px clamp(18px, 5vw, 64px);
+      padding: 18px clamp(18px, 5vw, 64px) 26px;
       scroll-behavior: smooth;
       background: var(--bg);
     }
@@ -358,6 +395,10 @@ HTML = r"""
     </aside>
     <main>
       <div class="topbar"><div><strong>zuse://web</strong></div><div class="top-actions"><span id="jobPill" class="pill">Keine Jobs</span><div id="mobileStatus" class="hint">Initialisiere …</div></div></div>
+      <section class="office-panel" aria-label="3D Agenten-Büro">
+        <div class="office-head"><div class="office-title">agent.office</div><div id="officeMeta" class="office-meta">1 Agent · keine Subagents</div></div>
+        <div id="officeScene" class="office-scene"><div id="officeRoom" class="office-room"><div class="office-floor"></div></div><div id="agentDetail" class="agent-detail">Zuse wartet im Büro auf Aufgaben.</div></div>
+      </section>
       <div id="chat" class="chat"></div>
       <div class="composer">
         <div class="composer-inner">
@@ -379,6 +420,9 @@ HTML = r"""
   const jobPill = document.getElementById('jobPill');
   const logBox = document.getElementById('logBox');
   const rateLimitEl = document.getElementById('rateLimit');
+  const officeRoom = document.getElementById('officeRoom');
+  const officeMeta = document.getElementById('officeMeta');
+  const agentDetail = document.getElementById('agentDetail');
   const toast = document.getElementById('toast');
   let busy = false;
   let ready = false;
@@ -386,6 +430,8 @@ HTML = r"""
   let activeJob = null;
   let streamText = '';
   let streamContent = null;
+  let officeAgents = [{id:'zuse', role:'Lead', title:'Zuse', status:'ready', step:0, max_steps:0, activity:'wartet'}];
+  let selectedAgentId = 'zuse';
 
   function esc(s) { return (s || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
   function inlineMarkdown(s) {
@@ -408,6 +454,53 @@ HTML = r"""
     }
     return out || '<p></p>';
   }
+
+  function pct(agent) {
+    if (agent.status === 'done') return 100;
+    if (agent.todos_total) return Math.round((agent.todos_done || 0) / agent.todos_total * 100);
+    if (agent.max_steps) return Math.min(100, Math.round((agent.step || 0) / agent.max_steps * 100));
+    return agent.status === 'running' ? 45 : 0;
+  }
+  function renderOffice(agents) {
+    const subs = (agents || []).length ? agents : [];
+    const all = [{id:'zuse', role:'Lead', title:'Zuse', status: busy ? 'running' : 'ready', activity: busy ? 'koordiniert Aufgabe' : 'wartet'}].concat(subs);
+    officeAgents = all;
+    officeMeta.textContent = `${all.length} Agent${all.length === 1 ? '' : 'en'} · ${subs.length} Subagent${subs.length === 1 ? '' : 's'}`;
+    const floor = '<div class="office-floor"></div>';
+    const root = {x: 46, y: 52};
+    const slots = [
+      {x:24,y:28},{x:70,y:28},{x:20,y:72},{x:72,y:72},{x:46,y:82},{x:88,y:50},{x:10,y:50}
+    ];
+    let html = floor;
+    const placed = all.map((a, i) => ({...a, ...(i === 0 ? root : slots[(i - 1) % slots.length])}));
+    placed.forEach((a, i) => {
+      html += `<div class="desk" style="left:calc(${a.x}% - 36px);top:calc(${a.y}% - 12px)"></div>`;
+      if (i > 0) {
+        const dx = a.x - root.x, dy = a.y - root.y;
+        const len = Math.sqrt(dx*dx + dy*dy);
+        const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+        html += `<div class="connector" style="left:${root.x}%;top:${root.y}%;width:${len}%;transform:rotate(${ang}deg)"></div>`;
+      }
+    });
+    placed.forEach((a, i) => {
+      const status = a.status || 'queued';
+      const role = esc(a.role || 'Agent');
+      const title = esc(a.title || a.id || 'Agent');
+      html += `<div class="agent3d ${i === 0 ? 'root' : ''} ${status}" data-id="${esc(a.id)}" style="left:${a.x}%;top:${a.y}%"><div class="halo"></div><div class="leg-l"></div><div class="leg-r"></div><div class="body"></div><div class="head"></div><div class="name">${role}</div></div>`;
+    });
+    officeRoom.innerHTML = html;
+    officeRoom.querySelectorAll('.agent3d').forEach(el => el.onclick = () => { selectedAgentId = el.dataset.id; updateAgentDetail(); });
+    if (!all.some(a => a.id === selectedAgentId)) selectedAgentId = 'zuse';
+    updateAgentDetail();
+  }
+  function updateAgentDetail() {
+    const a = officeAgents.find(x => x.id === selectedAgentId) || officeAgents[0];
+    if (!a) return;
+    const status = a.status || 'ready';
+    const progress = pct(a);
+    agentDetail.innerHTML = `<b>${esc(a.role || 'Agent')}</b> · ${esc(a.title || a.id || '')}<br>Status: ${esc(status)} · Fortschritt: ${progress}%<br><span class="hint">${esc(a.activity || (busy ? 'arbeitet' : 'wartet'))}</span>`;
+  }
+
   function showToast(text) {
     toast.textContent = text;
     toast.classList.add('show');
@@ -488,6 +581,7 @@ HTML = r"""
     input.disabled = v || !ready;
     jobPill.textContent = v ? 'Job läuft' : 'Keine Jobs';
     if (!v && ready) input.focus();
+    renderOffice(officeAgents.filter(a => a.id !== 'zuse'));
   }
   async function api(path, opts={}) {
     const res = await fetch(path, {headers: {'Content-Type':'application/json'}, ...opts});
@@ -572,6 +666,17 @@ HTML = r"""
         setBusy(false);
       }
     });
+    es.addEventListener('crew_start', e => {
+      renderOffice([]);
+    });
+    es.addEventListener('crew_update', e => {
+      const data = JSON.parse(e.data || '{}');
+      renderOffice(data.agents || []);
+    });
+    es.addEventListener('crew_done', e => {
+      const data = JSON.parse(e.data || '{}');
+      renderOffice(data.agents || []);
+    });
     es.addEventListener('status', e => {
       const data = JSON.parse(e.data || '{}');
       if (data.codex_rate_limit !== undefined) renderRateLimit(data.codex_rate_limit);
@@ -602,6 +707,7 @@ HTML = r"""
   document.getElementById('saveBtn').onclick = async () => {
     const r = await api('/api/save', {method:'POST', body:'{}'}); addMessage('system', r.message);
   };
+  renderOffice([]);
   addMessage('system', 'Zuse WebGUI startet …');
   refreshStatus();
   refreshLogs();
@@ -674,6 +780,7 @@ class WebState:
         try:
             self.agent = build_agent(self.args, self.console)
             self.agent.stream_view_factory = self.make_stream_view
+            self.agent.crew_observer = self.emit
             with self.lock:
                 self.ready = True
             self.emit("status", self.status())

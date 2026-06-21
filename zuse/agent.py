@@ -116,6 +116,7 @@ class Agent:
         self._last_ctx = 0  # approx input tokens of the last request, for compaction
         self._turn_memory = ""  # internal recalled facts/procedures for the active turn
         self.stream_view_factory = None  # optional callable(console, markdown, show_thinking) -> StreamSink
+        self.crew_observer = None  # optional callable(event, payload) for WebUI/live views
         # Auto-approving permissions for crew specialists (built lazily). Crews
         # run autonomously, so their tools never prompt on stdin — which would
         # collide with the live dashboard and across parallel threads.
@@ -491,7 +492,6 @@ class Agent:
             browser=self.browser,
             spawn_subagent=None,
             spawn_crew=None,
-            unattended=True,  # widen shell guardrails: no human approves these tools
         )
 
     def _run_subagent(self, instructions: str, max_steps: int) -> str:
@@ -725,7 +725,10 @@ class Agent:
         """Run a planned crew of specialists in parallel under the live dashboard,
         returning their reports in plan order. Shared by the `crew` tool, the
         `/crew` command, and automatic crew dispatch."""
-        registry = AgentRegistry()
+        crew_observer = getattr(self, "crew_observer", None)
+        registry = AgentRegistry(on_change=crew_observer)
+        if crew_observer:
+            crew_observer("crew_start", {"goal": goal, "agents": []})
         runs = [
             (registry.create(str(t["role"]), str(t["title"]), int(t["max_steps"])), t)
             for t in plan
@@ -752,6 +755,8 @@ class Agent:
                     task = runs[idx][1]
                     report = future.result()  # never raises; specialist captures errors
                     reports[idx] = f"## {idx + 1}. {task['role']}: {task['title']}\n{report.strip()}"
+        if crew_observer:
+            crew_observer("crew_done", {"goal": goal, "agents": [r.__dict__ for r in registry.snapshot()]})
         return reports
 
     def _run_crew(

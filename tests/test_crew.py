@@ -4,12 +4,15 @@ from pathlib import Path
 
 from rich.console import Console
 
+from zuse import tools as zuse_tools
+
 from zuse.agent import Agent
 from zuse.config import Config
 from zuse.costs import Usage
 from zuse.journal import EditJournal
-from zuse.providers.base import Backend, StepResult
+from zuse.providers.base import Backend, StepResult, ToolCall
 from zuse.tools import ToolContext
+from zuse.tools.subagent import Crew, Task
 
 
 class FakeBackend(Backend):
@@ -167,3 +170,81 @@ def test_run_crew_survives_a_failing_specialist():
     # The crew still returns a combined report; the failure is captured inline.
     assert "researcher" in result
     assert "failed" in result.lower() or "kaboom" in result
+
+
+def test_task_tool_invokes_subagent_spawn_callback():
+    agent = _make_agent()
+    seen = {}
+    agent.ctx.spawn_subagent = lambda instructions, max_steps: seen.setdefault(
+        "call", (instructions, max_steps)
+    ) or "unused"
+
+    result = Task().run({"instructions": "inspect this", "max_steps": 3}, agent.ctx)
+
+    assert result == ("inspect this", 3)
+    assert seen["call"] == ("inspect this", 3)
+
+
+def test_crew_tool_invokes_crew_spawn_callback():
+    agent = _make_agent()
+    seen = {}
+
+    def spawn(goal, tasks, mode, max_steps):
+        seen["call"] = (goal, tasks, mode, max_steps)
+        return "crew report"
+
+    agent.ctx.spawn_crew = spawn
+    tasks = [{"role": "tester", "title": "Smoke", "instructions": "verify"}]
+
+    result = Crew().run(
+        {"goal": "Check subagents", "tasks": tasks, "mode": "review", "max_steps_per_agent": 4},
+        agent.ctx,
+    )
+
+    assert result == "crew report"
+    assert seen["call"] == ("Check subagents", tasks, "review", 4)
+
+
+def test_nested_agents_cannot_spawn_more_subagents():
+    agent = _make_agent()
+    agent.tools = zuse_tools.default_tools()
+
+    nested_names = {tool.name for tool in agent._subagent_tools()}
+
+    assert "task" not in nested_names
+    assert "crew" not in nested_names
+    assert "read_file" in nested_names
+
+
+def test_single_subagent_tool_loop_executes_tool_calls_and_returns_final_report(tmp_path):
+    target = tmp_path / "note.txt"
+    target.write_text("hello from subagent")
+    agent = _make_agent()
+    agent.ctx.cwd = tmp_path
+
+    class ToolCallingBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def generate(self, system, tools, view, effort=None, think=None) -> StepResult:
+            self.calls += 1
+            if self.calls == 1:
+                assert "task" not in {tool["name"] for tool in tools}
+                assert "crew" not in {tool["name"] for tool in tools}
+                assert "read_file" in {tool["name"] for tool in tools}
+                return StepResult(
+                    text="reading",
+                    tool_calls=[ToolCall("tc1", "read_file", {"path": "note.txt"})],
+                )
+            _, tool_results = self.messages[-1]
+            assert tool_results[0].name == "read_file"
+            assert "hello from subagent" in tool_results[0].content
+            return StepResult(text="final subagent report")
+
+    agent.backend_factory = ToolCallingBackend
+    agent.tools = zuse_tools.default_tools()
+
+    result = agent._run_subagent("Read note.txt and report", max_steps=3)
+
+    assert result == "final subagent report"

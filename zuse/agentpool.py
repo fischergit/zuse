@@ -12,7 +12,9 @@ from __future__ import annotations
 import itertools
 import threading
 import time
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, replace
+from typing import Any
 
 # Lifecycle states for a single sub-agent run.
 QUEUED = "queued"
@@ -71,11 +73,20 @@ class AgentRun:
 class AgentRegistry:
     """Thread-safe collection of :class:`AgentRun`s, preserving creation order."""
 
-    def __init__(self) -> None:
+    def __init__(self, on_change: Callable[[str, dict[str, Any]], None] | None = None) -> None:
         self._lock = threading.Lock()
         self._runs: dict[str, AgentRun] = {}
         self._order: list[str] = []
         self._ids = itertools.count(1)
+        self._on_change = on_change
+
+    def _emit(self, event: str) -> None:
+        if self._on_change is None:
+            return
+        try:
+            self._on_change(event, {"agents": [asdict(run) for run in self.snapshot()]})
+        except Exception:  # noqa: BLE001 - live observers must never break crews
+            pass
 
     def create(self, role: str, title: str, max_steps: int) -> str:
         """Register a queued agent and return its id."""
@@ -83,15 +94,20 @@ class AgentRegistry:
             rid = f"a{next(self._ids)}"
             self._runs[rid] = AgentRun(id=rid, role=role, title=title, max_steps=max_steps)
             self._order.append(rid)
-            return rid
+        self._emit("crew_update")
+        return rid
 
     def update(self, rid: str, **fields) -> None:
         """Set arbitrary fields on a run (no-op if the id is unknown)."""
+        changed = False
         with self._lock:
             run = self._runs.get(rid)
             if run is not None:
                 for key, value in fields.items():
                     setattr(run, key, value)
+                changed = True
+        if changed:
+            self._emit("crew_update")
 
     def start(self, rid: str) -> None:
         self.update(rid, status=RUNNING, started=time.monotonic())
