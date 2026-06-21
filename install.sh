@@ -355,8 +355,19 @@ python -m pip install --upgrade pip setuptools wheel
 
 log "Installing Zuse"
 EXTRAS="mac,browser,whatsapp"
-if ! python -m pip install --only-binary=:all: greenlet >/dev/null 2>&1; then
-  warn "No prebuilt greenlet wheel for this Python/platform; retrying with Python $PYTHON_VERSION"
+
+install_editable() {
+  # --only-binary=greenlet forbids compiling greenlet (pulled in transitively
+  # by playwright) from source. On a Python/platform without a prebuilt
+  # greenlet wheel this fails fast with a clean resolver error instead of
+  # invoking the C compiler, which needs Xcode CLT and otherwise dies with
+  # "failed building wheel for greenlet". The clean failure lets us fall back
+  # to a uv-managed Python that does have wheels.
+  python -m pip install --only-binary=greenlet -e ".[${EXTRAS}]"
+}
+
+if ! install_editable; then
+  warn "Install failed — no prebuilt greenlet wheel for this Python/platform; retrying on uv-managed Python $PYTHON_VERSION"
   deactivate 2>/dev/null || true
   UV_CMD="$(ensure_uv)" || exit 1
   "$UV_CMD" python install "$PYTHON_VERSION"
@@ -365,8 +376,12 @@ if ! python -m pip install --only-binary=:all: greenlet >/dev/null 2>&1; then
   # shellcheck disable=SC1091
   source .venv/bin/activate
   python -m pip install --upgrade pip setuptools wheel
+  if ! install_editable; then
+    err "greenlet has no prebuilt wheel even on Python $PYTHON_VERSION on this platform."
+    err "Install Xcode Command Line Tools ('xcode-select --install') and rerun install.sh."
+    exit 1
+  fi
 fi
-python -m pip install -e ".[${EXTRAS}]"
 ok "Zuse package installed"
 
 if [ "$SKIP_BROWSER" = false ]; then
