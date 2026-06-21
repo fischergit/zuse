@@ -107,6 +107,7 @@ class Config:
     browser_headless: bool = True    # run the automation browser without a visible window
     crew_concurrency: int = 4        # max specialist sub-agents running in parallel per crew
     crew_planner: bool = True        # let a coordinator agent decompose goals into specialists
+    auto_crew: bool = True           # auto-route substantial tasks to a crew (no /crew needed)
     show_actions: bool = True        # show tool calls/output + live stream; off = only agent progress
 
     @property
@@ -168,6 +169,9 @@ confirm the change works. Report failures honestly with the actual output.
 final message, not your tool logs — summarize what you actually did there.
 - For multi-step tasks, maintain a plan with the `todo_write` tool so the user \
 can follow your progress. Update statuses as you go.
+- For a large task that splits into independent parts, delegate to a `crew` of \
+parallel specialist sub-agents (or a single `task` sub-agent for one focused \
+piece). They work concurrently and the user watches their live progress.
 - Prefer dedicated tools (read_file, edit_file, grep, glob) over equivalent \
 shell commands; they are safer and clearer.
 - Destructive or outward-facing actions may require user confirmation. Don't try \

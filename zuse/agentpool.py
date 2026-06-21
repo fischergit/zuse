@@ -51,16 +51,21 @@ class AgentRun:
         """Best-effort progress in [0, 1].
 
         Uses the agent's own todo plan when it made one (the most honest signal),
-        otherwise falls back to step count against its ``max_steps`` ceiling.
-        Finished agents always read as full.
+        otherwise falls back to step count against its ``max_steps`` ceiling. A
+        completed agent reads as full; a failed one reflects how far it got.
         """
-        if self.status in (DONE, FAILED):
+        if self.status == DONE:
             return 1.0
         if self.todos_total > 0:
             return min(1.0, self.todos_done / self.todos_total)
         if self.max_steps > 0:
             return min(1.0, self.step / self.max_steps)
         return 0.0
+
+    @property
+    def percent(self) -> int:
+        """Progress as a whole-number percentage (0–100)."""
+        return int(round(self.fraction * 100))
 
 
 class AgentRegistry:

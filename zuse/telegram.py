@@ -150,7 +150,39 @@ class ZuseTelegramBridge:
 
 
 def _chunks(text: str, limit: int) -> list[str]:
-    return [text[i : i + limit] for i in range(0, len(text), limit)] or [""]
+    """Split Telegram messages without cutting paragraphs when possible.
+
+    Telegram rejects messages above its length limit. Prefer splitting at newline
+    boundaries for readability, but still hard-split very long lines.
+    """
+
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+
+    text = text or ""
+    if not text:
+        return [""]
+
+    chunks: list[str] = []
+    current = ""
+    for line in text.splitlines(keepends=True):
+        while len(line) > limit:
+            if current:
+                chunks.append(current.rstrip("\n"))
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        if len(current) + len(line) >= limit:
+            if current:
+                chunks.append(current.rstrip("\n"))
+                current = line
+            else:
+                current += line
+        else:
+            current += line
+    if current or not chunks:
+        chunks.append(current.rstrip("\n"))
+    return chunks
 
 
 def extract_text_message(update: dict[str, Any]) -> TelegramMessage | None:

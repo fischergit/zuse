@@ -220,12 +220,17 @@ class Agent:
             ui.render_recall(self.console, len(recalled))
             self._turn_memory = "\n".join(f"- {e.text}" for e in recalled)
 
+        auto_crew = self._should_auto_crew(user_input)
+
         if recalled and self.config.inject_recalled_memory:
             self.backend.add_user(f"<memory>\n{self._turn_memory}\n</memory>\n\n{user_input}")
         else:
             self.backend.add_user(user_input)
         try:
-            text, tools_used = self._agent_loop()
+            if auto_crew:
+                text, tools_used = self._auto_crew_turn(user_input), ["crew"]
+            else:
+                text, tools_used = self._agent_loop()
         finally:
             self._turn_memory = ""
         self._reflect(user_input, [text] if text else [], tools_used)
@@ -340,6 +345,13 @@ class Agent:
         ui.render_goal_result(self.console, outcome)
         self._reflect(f"[goal] {goal}", [], all_tools)
 
+    def run_crew(self, goal: str) -> None:
+        """Explicitly launch a crew of parallel specialist sub-agents for a goal
+        and show the live dashboard (the `/crew` command). The coordinator plans
+        the specialists; their synthesized report is printed when they finish."""
+        report = self._run_crew(goal, [], mode="auto", max_steps=10)
+        ui.render_answer(self.console, report)
+
     # -- tool execution ----------------------------------------------------
 
     def _execute_tool(self, tc: ToolCall) -> ToolResult:
@@ -367,7 +379,7 @@ class Agent:
                 )
 
         try:
-            output = tool.run(tc.input, self.ctx)
+            output = self._run_tool_watched(tool, tc, show)
         except ToolError as e:
             if show:
                 ui.render_tool_result(self.console, str(e), is_error=True)
@@ -383,6 +395,18 @@ class Agent:
             shown = text + (f"  ⟨+{len(images)} image⟩" if images else "")
             ui.render_tool_result(self.console, shown)
         return ToolResult(tc.id, tc.name, text, images=images)
+
+    def _run_tool_watched(self, tool: Tool, tc: ToolCall, show: bool):
+        """Run a tool. In quiet mode, show a live spinner naming the running
+        tool so a slow tool (e.g. a long shell command) reads as 'working',
+        not a hang. Skipped for crew/task, which render their own live views,
+        and in verbose mode, which already logs the call."""
+        if show or tc.name in ("crew", "task"):
+            return tool.run(tc.input, self.ctx)
+        summary = tool.call_summary(tc.input)
+        label = f"[#22D3EE]{tc.name}[/] [grey42]{summary}[/]" if summary else f"[#22D3EE]{tc.name}[/]"
+        with self.console.status(label, spinner="dots"):
+            return tool.run(tc.input, self.ctx)
 
     # -- continuous learning ----------------------------------------------
 
@@ -470,11 +494,20 @@ class Agent:
         )
 
     def _run_subagent(self, instructions: str, max_steps: int) -> str:
-        """The `task` tool: one focused sub-agent, run inline (not in a crew)."""
-        with self.console.status("[magenta]sub-agent working…[/]", spinner="dots"):
-            return self._agent_subloop(
-                "sub-agent", "Focused delegated task", instructions, max_steps, self.ctx
-            )
+        """The `task` tool: one focused sub-agent, run inline (not in a crew).
+        Uses an isolated auto-approving context like crew specialists, so it
+        never blocks on a permission prompt behind its status spinner."""
+        ctx = self._specialist_ctx()
+        try:
+            with self.console.status("[magenta]sub-agent working…[/]", spinner="dots"):
+                return self._agent_subloop(
+                    "sub-agent", "Focused delegated task", instructions, max_steps, ctx
+                )
+        finally:
+            try:
+                ctx.shell.kill()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _run_specialist(
         self,
@@ -634,7 +667,8 @@ class Agent:
         sub = self.backend_factory()
         sub.add_user(f"Goal: {goal}\nMode: {mode}\n\nReturn 3-6 specialists as a JSON array.")
         try:
-            result = sub.generate(planner_system, [], ui.NullView(), effort="low", think=False)
+            with self.console.status("[magenta]coordinator planning the crew…[/]", spinner="dots"):
+                result = sub.generate(planner_system, [], ui.NullView(), effort="low", think=False)
             self.usage.add(result.usage)
             planned = self._parse_crew_plan(result.text, goal, max_steps)
         except Exception:  # noqa: BLE001
@@ -686,10 +720,10 @@ class Agent:
             normalized.append({"role": role, "title": title, "instructions": instructions, "max_steps": steps})
         return normalized or self._default_crew_tasks(goal, mode, max_steps)
 
-    def _run_crew(
-        self, goal: str, tasks: list[dict[str, Any]], mode: str = "auto", max_steps: int = 10
-    ) -> str:
-        plan = self._normalize_crew_tasks(goal, tasks, mode, max_steps)
+    def _run_specialists(self, goal: str, plan: list[dict[str, Any]]) -> list[str]:
+        """Run a planned crew of specialists in parallel under the live dashboard,
+        returning their reports in plan order. Shared by the `crew` tool, the
+        `/crew` command, and automatic crew dispatch."""
         registry = AgentRegistry()
         runs = [
             (registry.create(str(t["role"]), str(t["title"]), int(t["max_steps"])), t)
@@ -717,7 +751,13 @@ class Agent:
                     task = runs[idx][1]
                     report = future.result()  # never raises; specialist captures errors
                     reports[idx] = f"## {idx + 1}. {task['role']}: {task['title']}\n{report.strip()}"
+        return reports
 
+    def _run_crew(
+        self, goal: str, tasks: list[dict[str, Any]], mode: str = "auto", max_steps: int = 10
+    ) -> str:
+        plan = self._normalize_crew_tasks(goal, tasks, mode, max_steps)
+        reports = self._run_specialists(goal, plan)
         synthesis = (
             "You are Zuse's crew coordinator. Synthesize the specialist reports into "
             "one concise handoff for the main agent. Include: overall status, key "
@@ -733,3 +773,64 @@ class Agent:
         except Exception:  # noqa: BLE001
             summary = "\n\n".join(reports)
         return summary or "\n\n".join(reports) or "(crew returned no reports)"
+
+    # -- automatic crew routing -------------------------------------------
+
+    def _should_auto_crew(self, user_input: str) -> bool:
+        """Decide whether a turn should automatically run as a crew, so the user
+        never has to type /crew. Cheap classifier: a quick low-effort call that
+        answers crew/solo, gated by a length heuristic to skip trivial messages.
+        Conservative by design — a crew costs many sub-agent calls."""
+        if not getattr(self.config, "auto_crew", False):
+            return False
+        if len(user_input.split()) < 4:  # greetings / quick acks stay solo
+            return False
+        router_system = (
+            "You route a user's request to either a single agent or a crew of parallel "
+            "specialist sub-agents. Answer 'crew' ONLY for a substantial task with several "
+            "independent parts that genuinely benefit from parallel specialists — e.g. a "
+            "multi-file feature, a broad investigation or audit, or research + implement + "
+            "test. Answer 'solo' for anything quick, conversational, exploratory, or "
+            "single-file. When unsure, answer 'solo'. Respond with ONLY 'crew' or 'solo'."
+        )
+        sub = self.backend_factory()
+        sub.add_user(f"Request: {user_input}\n\nAnswer with one word: crew or solo.")
+        try:
+            with self.console.status("[magenta]routing…[/]", spinner="dots"):
+                result = sub.generate(router_system, [], ui.NullView(), effort="low", think=False)
+            self.usage.add(result.usage)
+        except Exception:  # noqa: BLE001
+            return False
+        return result.text.strip().lower().startswith("crew")
+
+    def _auto_crew_turn(self, goal: str) -> str:
+        """Run a turn as a crew: specialists work in parallel (live dashboard),
+        then the MAIN backend synthesizes the final answer — a real assistant turn,
+        so history stays valid and follow-ups have the result in context."""
+        self.console.print(
+            "[#8B5CF6]⛓ delegating to a crew of sub-agents…[/] "
+            "[grey42](/autocrew to turn this off)[/]"
+        )
+        plan = self._normalize_crew_tasks(goal, [], "auto", 10)
+        reports = self._run_specialists(goal, plan)
+        system = self._turn_system() + (
+            "\n\n# Crew specialist reports\n"
+            "A crew of sub-agents just did this work in parallel. Write the final answer "
+            "for the user from their reports — summarize what was done, results, and any "
+            "blockers or next steps. Do not redo their work.\n\n" + "\n\n".join(reports)
+        )
+        if self.config.show_actions:
+            with ui.StreamView(
+                self.console,
+                markdown=self.config.stream_markdown,
+                show_thinking=self.config.show_thinking,
+            ) as view:
+                result = self.backend.generate(system, [], view)
+        else:
+            result = self.backend.generate(system, [], ui.NullView())
+        self.usage.add(result.usage)
+        self._last_ctx = _ctx_tokens(result.usage)
+        self.backend.add_assistant(result)
+        if not self.config.show_actions and result.text:
+            ui.render_answer(self.console, result.text)
+        return result.text

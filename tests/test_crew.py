@@ -49,6 +49,15 @@ class FakeBackend(Backend):
         pass
 
 
+def _reply_backend(reply: str):
+    """A backend whose generate() always returns a fixed reply (for the router)."""
+    backend = FakeBackend()
+    backend.generate = lambda system, tools, view, effort=None, think=None: StepResult(
+        text=reply, tool_calls=[], usage=None
+    )
+    return backend
+
+
 def _make_agent() -> Agent:
     """Build an Agent with only the attributes `_run_crew` needs — avoids the
     heavyweight real constructor (MCP, knowledge files, browser, etc.)."""
@@ -93,6 +102,48 @@ def test_run_crew_runs_all_specialists_and_preserves_order():
     )
     # Parallel specialists + the synthesis step all accrued usage.
     assert agent.usage.requests >= len(tasks)
+
+
+def test_run_crew_command_prints_a_report():
+    agent = _make_agent()
+    agent.run_crew("Investigate the build")  # the /crew command path
+
+    text = agent.console.export_text()
+    # The synthesized report was rendered, and the default crew roles appear.
+    assert "zuse" in text
+    assert "planner" in text or "researcher" in text
+
+
+def test_auto_crew_router_decides_solo_vs_crew():
+    agent = _make_agent()
+    agent.config.auto_crew = True
+    long_task = "please refactor the whole authentication system across many files"
+
+    # Trivially short input stays solo without even consulting the model.
+    assert agent._should_auto_crew("do it") is False
+
+    # Router verdicts are honoured.
+    agent.backend_factory = lambda: _reply_backend("solo")
+    assert agent._should_auto_crew(long_task) is False
+    agent.backend_factory = lambda: _reply_backend("crew")
+    assert agent._should_auto_crew(long_task) is True
+
+    # Disabled → never auto-crew.
+    agent.config.auto_crew = False
+    assert agent._should_auto_crew(long_task) is False
+
+
+def test_auto_crew_turn_synthesizes_via_main_backend():
+    agent = _make_agent()
+    agent.system = "system"
+    agent._turn_memory = ""
+    agent.backend = _reply_backend("FINAL CREW ANSWER")  # the main turn's synthesis
+
+    text = agent._auto_crew_turn("Audit and harden the installer")
+
+    assert text == "FINAL CREW ANSWER"
+    # The synthesis was recorded as a real assistant turn on the main backend.
+    assert ("assistant", "FINAL CREW ANSWER") in agent.backend.messages
 
 
 def test_run_crew_survives_a_failing_specialist():

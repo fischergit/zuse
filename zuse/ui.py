@@ -355,7 +355,8 @@ class TurnProgress:
         self.todos = todos
         self.label = label
         self.step = step
-        self.activity = "working"
+        self.activity = "thinking…"
+        self.started = time.monotonic()
         self._live: Live | None = None
 
     def __enter__(self) -> "TurnProgress":
@@ -381,12 +382,15 @@ class TurnProgress:
         line = Text()
         line.append(frame + " ", style=f"bold {CYAN}")
         line.append(self.label, style="bold white")
-        line.append("  " + _trunc(self.activity, 48), style=GREY)
+        line.append("  " + _trunc(self.activity, 44), style=GREY)
         if total:
+            pct = round(done / total * 100)
             line.append("   " + _progress_bar(done / total, 8), style=CYAN)
+            line.append(f" {pct}%", style=f"bold {CYAN}")
             line.append(f" {done}/{total}", style=FAINT)
         elif self.step:
             line.append(f"   step {self.step}", style=FAINT)
+        line.append(f"  · {time.monotonic() - self.started:.0f}s", style=FAINT)
         yield Padding(line, (0, 0, 0, 2))
 
 
@@ -425,7 +429,9 @@ class CrewDashboard:
     def __rich_console__(self, console, options):
         yield Padding(self._panel(final=False), (1, 0, 0, 2))
 
-    def _row(self, run: "AgentRun", final: bool) -> tuple[Text, Text, Text, Text, Text]:
+    def _row(self, run: "AgentRun", final: bool) -> tuple[Text, ...]:
+        bar_color = GREEN if run.status == DONE else RED if run.status == FAILED else CYAN
+
         if run.status == RUNNING and not final:
             frame = _BRAILLE_FRAMES[int(time.monotonic() * 12) % len(_BRAILLE_FRAMES)]
             glyph = Text(frame, style=f"bold {CYAN}")
@@ -438,23 +444,18 @@ class CrewDashboard:
         if run.title and run.title != run.role:
             name.append("  " + _trunc(run.title, 30), style=FAINT)
 
-        bar_color = GREEN if run.status == DONE else RED if run.status == FAILED else CYAN
         bar = Text(_progress_bar(run.fraction), style=bar_color)
-        if run.status in (RUNNING, QUEUED):  # a finished bar speaks for itself
-            if run.todos_total:
-                bar.append(f" {run.todos_done}/{run.todos_total}", style=FAINT)
-            elif run.max_steps:
-                bar.append(f" {run.step}/{run.max_steps}", style=FAINT)
+        percent = Text(f"{run.percent:>3}%", style=f"bold {bar_color}")
 
         if run.status == FAILED:
-            activity = Text(_trunc(run.error or "failed", 48), style=RED)
+            activity = Text(_trunc(run.error or "failed", 46), style=RED)
         elif run.status == DONE:
             activity = Text("done", style=GREEN)
         else:
-            activity = Text(_trunc(run.activity or "…", 48), style=GREY)
+            activity = Text(_trunc(run.activity or "…", 46), style=GREY)
 
         elapsed = Text(f"{run.elapsed:3.0f}s", style=FAINT)
-        return glyph, name, bar, activity, elapsed
+        return glyph, name, bar, percent, activity, elapsed
 
     def _panel(self, final: bool) -> Panel:
         runs = self.registry.snapshot()
@@ -462,6 +463,7 @@ class CrewDashboard:
         grid.add_column(no_wrap=True)              # status glyph
         grid.add_column(no_wrap=True)              # role + title
         grid.add_column(no_wrap=True)              # progress bar
+        grid.add_column(no_wrap=True, justify="right")  # percent
         grid.add_column(ratio=1)                   # current activity
         grid.add_column(no_wrap=True, justify="right")  # elapsed
         if runs:
@@ -469,12 +471,15 @@ class CrewDashboard:
                 grid.add_row(*self._row(run, final))
         else:
             grid.add_row(Text("…", style=GREY), Text("starting crew", style=FAINT),
-                         Text(""), Text(""), Text(""))
+                         Text(""), Text(""), Text(""), Text(""))
 
         counts = {QUEUED: 0, RUNNING: 0, DONE: 0, FAILED: 0}
         for run in runs:
             counts[run.status] = counts.get(run.status, 0) + 1
+        overall = round(sum(r.fraction for r in runs) / len(runs) * 100) if runs else 0
         footer = Text()
+        footer.append(f"{overall}% overall", style=f"bold {CYAN}")
+        footer.append("   ·  ", style=FAINT)
         footer.append(f"{counts[RUNNING]} running", style=CYAN)
         footer.append("  ·  ", style=FAINT)
         footer.append(f"{counts[QUEUED]} queued", style=GREY)

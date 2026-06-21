@@ -18,9 +18,18 @@ def test_agentrun_elapsed_and_fraction():
 
     run.todos_total, run.todos_done = 4, 3  # todo plan takes precedence
     assert run.fraction == 0.75
+    assert run.percent == 75
 
-    run.status = DONE                     # finished always reads full
+    run.status = DONE                     # completed reads full
     assert run.fraction == 1.0
+    assert run.percent == 100
+
+
+def test_failed_agent_reports_how_far_it_got_not_full():
+    run = AgentRun(id="a1", role="r", title="t", max_steps=10, step=4, status=FAILED)
+    # A failed agent reflects real progress (4/10), not a misleading 100%.
+    assert run.fraction == 0.4
+    assert run.percent == 40
 
 
 def test_registry_create_update_snapshot_is_isolated():

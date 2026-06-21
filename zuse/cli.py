@@ -31,6 +31,8 @@ SLASH_HELP = [
     ("/clear", "Clear the conversation (keep settings)"),
     ("/undo", "Revert the last file change Zuse made"),
     ("/goal <text>", "Autonomous mode: work until the goal is achieved & verified"),
+    ("/crew <text>", "Launch a crew of parallel sub-agents with a live dashboard"),
+    ("/autocrew", "Toggle automatic crew dispatch for substantial tasks"),
     ("/model <name>", "Switch model for the active provider"),
     ("/login", "Sign in with ChatGPT (OpenAI Codex OAuth)"),
     ("/effort <level>", "Set reasoning effort: low|medium|high|xhigh|max (cloud)"),
@@ -246,6 +248,14 @@ def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
                 agent.run_goal(arg)
             except KeyboardInterrupt:
                 console.print("\n[#FBBF24]goal mode interrupted[/]")
+    elif name == "/crew":
+        if not arg:
+            console.print("Usage: /crew <goal to split across parallel sub-agents>")
+        else:
+            try:
+                agent.run_crew(arg)
+            except KeyboardInterrupt:
+                console.print("\n[#FBBF24]crew interrupted[/]")
     elif name == "/model":
         if not arg:
             console.print(f"Active model: [cyan]{cfg.active_model}[/] ([dim]{cfg.provider}[/])")
@@ -283,6 +293,13 @@ def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
             console.print("Quiet mode [bold]off[/] — showing tool activity again.")
         else:
             console.print("Quiet mode [bold]on[/] — showing only which agent is running and how far.")
+    elif name == "/autocrew":
+        cfg.auto_crew = not cfg.auto_crew
+        cfg.save()  # standing preference — persist across sessions
+        if cfg.auto_crew:
+            console.print("Auto-crew [bold]on[/] — substantial tasks run as a crew automatically.")
+        else:
+            console.print("Auto-crew [bold]off[/] — use [bold]/crew[/] to run a crew manually.")
     elif name == "/learning":
         cfg.learning = not cfg.learning
         console.print(f"Continuous learning: {'on' if cfg.learning else 'off'}")
@@ -594,6 +611,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-markdown", action="store_true", help="Disable live markdown streaming.")
     p.add_argument("--quiet", action="store_true",
                    help="Hide tool activity; show only which agent is running and how far.")
+    p.add_argument("--no-autocrew", action="store_true",
+                   help="Disable automatic crew dispatch (use /crew to run one manually).")
     p.add_argument("--browser-window", action="store_true",
                    help="Show a visible browser window (default: headless).")
     p.add_argument("--no-learning", action="store_true", help="Disable continuous learning.")
@@ -623,6 +642,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg.stream_markdown = False
     if args.quiet:
         cfg.show_actions = False
+    if args.no_autocrew:
+        cfg.auto_crew = False
     if args.browser_window:
         cfg.browser_headless = False
     if args.no_learning:

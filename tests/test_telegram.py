@@ -1,4 +1,6 @@
-from zuse.telegram import TelegramSettings, extract_text_message
+import pytest
+
+from zuse.telegram import TelegramSettings, _chunks, extract_text_message
 
 
 def test_extract_text_message():
@@ -49,3 +51,18 @@ def test_telegram_settings_from_env(monkeypatch):
 
     assert settings.bot_token == "token"
     assert settings.allowed_chat_ids == (123, -456)
+
+
+def test_chunks_prefers_newline_boundaries():
+    text = "Absatz eins\nAbsatz zwei\nAbsatz drei"
+
+    assert _chunks(text, 24) == ["Absatz eins", "Absatz zwei\nAbsatz drei"]
+
+
+def test_chunks_hard_splits_long_lines():
+    assert _chunks("abcdef", 3) == ["abc", "def"]
+
+
+def test_chunks_rejects_invalid_limit():
+    with pytest.raises(ValueError):
+        _chunks("text", 0)

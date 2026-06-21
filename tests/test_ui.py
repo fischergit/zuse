@@ -46,6 +46,9 @@ def test_crew_dashboard_renders_agents_with_status_and_progress():
     assert "running" in text and "done" in text and "failed" in text
     # A progress bar was drawn.
     assert "▰" in text or "▱" in text
+    # Per-agent percentages and an overall percentage are shown.
+    assert "100%" in text          # the finished coder
+    assert "% overall" in text
 
 
 def test_turn_progress_shows_agent_label_and_todo_fraction():
@@ -60,7 +63,8 @@ def test_turn_progress_shows_agent_label_and_todo_fraction():
 
     text = console.export_text()
     assert "zuse" in text
-    assert "1/3" in text  # one of three todos done
+    assert "33%" in text  # one of three todos done
+    assert "1/3" in text
 
 
 def test_turn_progress_falls_back_to_step_without_todos():
