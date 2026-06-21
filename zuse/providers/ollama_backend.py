@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 
 from ..config import Config
-from .base import Backend, StepResult, StreamSink, ToolCall, ToolResult
+from .base import STREAM_TIMEOUT, Backend, StepResult, StreamSink, ToolCall, ToolResult
 
 _THINK_TAGS = ("<think>", "</think>")
 _MAX_TAG = max(len(t) for t in _THINK_TAGS)
@@ -170,7 +170,7 @@ class OllamaBackend(Backend):
             raw_tool_calls.clear()
             splitter = _ThinkStream(view, self.config.show_thinking)
             try:
-                with httpx.Client(timeout=None) as client:
+                with httpx.Client(timeout=STREAM_TIMEOUT) as client:
                     with client.stream("POST", f"{self.host}/api/chat", json=payload) as resp:
                         if resp.status_code != 200:
                             body = resp.read().decode(errors="replace")
@@ -198,6 +198,11 @@ class OllamaBackend(Backend):
                     f"Cannot reach Ollama at {self.host}. Is it running? "
                     f"Start it with `ollama serve`. ({e})"
                 )
+            except httpx.TimeoutException as e:
+                raise RuntimeError(
+                    f"Ollama timed out — no data for 300s from {self.host}. "
+                    "The model may be too large or stuck; try again."
+                ) from e
             break
 
         splitter.flush()

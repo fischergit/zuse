@@ -34,6 +34,9 @@ class ToolContext:
     background: Any = None    # BackgroundManager, for run_background et al.
     journal: Any = None      # EditJournal, for /undo of file changes
     browser: Any = None      # BrowserManager, for the browser_* tools
+    # True inside an auto-approving crew/sub-agent (no human approving each tool):
+    # widens shell safety guardrails to dangerous-but-sometimes-legitimate commands.
+    unattended: bool = False
     # Factory to spawn a sub-agent (set by the Agent at runtime). Signature:
     # (task: str, max_steps: int) -> str
     spawn_subagent: Callable[[str, int], str] | None = None

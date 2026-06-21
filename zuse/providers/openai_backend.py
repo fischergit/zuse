@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 
 from ..config import Config
-from .base import Backend, StepResult, StreamSink, ToolCall, ToolResult
+from .base import STREAM_TIMEOUT, Backend, StepResult, StreamSink, ToolCall, ToolResult
 
 
 class OpenAIBackend(Backend):
@@ -117,7 +117,7 @@ class OpenAIBackend(Backend):
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
         try:
-            with httpx.Client(timeout=None) as client:
+            with httpx.Client(timeout=STREAM_TIMEOUT) as client:
                 with client.stream("POST", f"{self.base_url}/chat/completions",
                                    json=payload, headers=headers) as resp:
                     if resp.status_code != 200:
@@ -155,6 +155,11 @@ class OpenAIBackend(Backend):
                                     slot["args"] += fn["arguments"]
         except httpx.ConnectError as e:
             raise RuntimeError(f"Cannot reach OpenAI endpoint {self.base_url}: {e}")
+        except httpx.TimeoutException as e:
+            raise RuntimeError(
+                "OpenAI request timed out — no data received for 300s (stalled stream). "
+                "Please try again."
+            ) from e
 
         text = "".join(text_parts)
         tool_calls: list[ToolCall] = []

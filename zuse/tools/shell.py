@@ -4,16 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..safety import destructive_reason
 from .base import Tool, ToolContext, ToolError, _short
 
-# Patterns that are obviously destructive — never run.
-HARD_BLOCK = ("rm -rf /", ":(){:|:&};:", "mkfs", "dd if=")
 
-
-def _check_block(command: str) -> None:
-    for pat in HARD_BLOCK:
-        if pat in command:
-            raise ToolError(f"Refusing to run a command containing {pat!r}.")
+def _check_block(command: str, ctx: ToolContext) -> None:
+    reason = destructive_reason(command, unattended=getattr(ctx, "unattended", False))
+    if reason:
+        raise ToolError(
+            f"Refused for safety — {reason}. "
+            "Blocked because this ran without a human approving it. "
+            "If it is genuinely required, ask the user to run it themselves."
+        )
 
 
 class Bash(Tool):
@@ -40,7 +42,7 @@ class Bash(Tool):
 
     def run(self, args: dict[str, Any], ctx: ToolContext) -> str:
         command = args["command"]
-        _check_block(command)
+        _check_block(command, ctx)
         if ctx.shell is None:
             raise ToolError("No shell session available.")
         timeout = int(args.get("timeout", 120))
@@ -78,7 +80,7 @@ class RunBackground(Tool):
 
     def run(self, args: dict[str, Any], ctx: ToolContext) -> str:
         command = args["command"]
-        _check_block(command)
+        _check_block(command, ctx)
         if ctx.background is None:
             raise ToolError("Background manager unavailable.")
         task_id = ctx.background.start(command, str(ctx.cwd))

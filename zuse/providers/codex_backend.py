@@ -18,7 +18,7 @@ import httpx
 
 from ..config import Config
 from ..openai_auth import CODEX_BASE_URL, get_access_token
-from .base import Backend, StepResult, StreamSink, ToolCall, ToolResult
+from .base import STREAM_TIMEOUT, Backend, StepResult, StreamSink, ToolCall, ToolResult
 
 
 @dataclass(frozen=True)
@@ -139,7 +139,7 @@ class CodexBackend(Backend):
         usage_obj: dict = {}
 
         try:
-            with httpx.Client(timeout=None) as client:
+            with httpx.Client(timeout=STREAM_TIMEOUT) as client:
                 with client.stream("POST", f"{CODEX_BASE_URL}/responses",
                                    json=payload, headers=headers) as resp:
                     self._capture_rate_limits(resp.headers)
@@ -178,6 +178,11 @@ class CodexBackend(Backend):
                             raise RuntimeError(f"Codex backend error: {err.get('message', ev)}")
         except httpx.ConnectError as e:
             raise RuntimeError(f"Cannot reach the Codex backend: {e}")
+        except httpx.TimeoutException as e:
+            raise RuntimeError(
+                "Codex backend timed out — no data received for 300s (stalled stream). "
+                "Please try again."
+            ) from e
 
         # Prefer the authoritative final output items; fall back to streamed text.
         text_parts: list[str] = []

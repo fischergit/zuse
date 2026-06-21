@@ -8,9 +8,20 @@ add_assistant → (execute tools) → add_tool_results.
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+import httpx
+
+# Per-operation timeouts for streaming HTTP backends. A long but steady response
+# is fine — each received chunk resets the read timer — while a stalled
+# connection raises instead of hanging forever (the old `timeout=None`). The
+# generous read window leaves room for slow reasoning models before first token;
+# bump ZUSE_STREAM_READ_TIMEOUT if a model legitimately goes silent for longer.
+_READ_TIMEOUT = float(os.environ.get("ZUSE_STREAM_READ_TIMEOUT", "300"))
+STREAM_TIMEOUT = httpx.Timeout(connect=15.0, read=_READ_TIMEOUT, write=60.0, pool=15.0)
 
 
 @dataclass

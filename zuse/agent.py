@@ -491,6 +491,7 @@ class Agent:
             browser=self.browser,
             spawn_subagent=None,
             spawn_crew=None,
+            unattended=True,  # widen shell guardrails: no human approves these tools
         )
 
     def _run_subagent(self, instructions: str, max_steps: int) -> str:
