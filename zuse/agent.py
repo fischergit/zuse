@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
@@ -22,6 +24,7 @@ from .config import (
 )
 from .browser import BrowserManager
 from .costs import Usage
+from .dream import DreamManager, DreamResult
 from .journal import EditJournal
 from .knowledge import KnowledgeStore
 from .mcp import MCPManager
@@ -115,6 +118,8 @@ class Agent:
         self.browser = BrowserManager(headless=config.browser_headless)
         self._last_ctx = 0  # approx input tokens of the last request, for compaction
         self._turn_memory = ""  # internal recalled facts/procedures for the active turn
+        self._active_lock = threading.Lock()
+        self._active_turns = 0
         self.stream_view_factory = None  # optional callable(console, markdown, show_thinking) -> StreamSink
         self.crew_observer = None  # optional callable(event, payload) for WebUI/live views
         # Auto-approving permissions for crew specialists (built lazily). Crews
@@ -134,6 +139,16 @@ class Agent:
             spawn_subagent=self._run_subagent,
             spawn_crew=self._run_crew,
         )
+        self.dreams = DreamManager(
+            backend_factory=self.backend_factory,
+            config=self.config,
+            knowledge=self.knowledge,
+            usage=self.usage,
+            active_transcript=self._dream_transcript,
+            is_idle=self._is_idle,
+            on_learned=self.refresh_system,
+        )
+        self.dreams.start()
 
     def _make_embedder(self):
         if not self.config.embed_model:
@@ -148,8 +163,40 @@ class Agent:
     def cost_model(self) -> str | None:
         return self.backend.cost_model
 
+    @contextmanager
+    def _active_work(self):
+        if not hasattr(self, "_active_lock"):
+            self._active_lock = threading.Lock()
+            self._active_turns = 0
+        with self._active_lock:
+            self._active_turns += 1
+        try:
+            yield
+        finally:
+            with self._active_lock:
+                self._active_turns = max(0, self._active_turns - 1)
+
+    def _is_idle(self) -> bool:
+        with self._active_lock:
+            return self._active_turns == 0
+
+    def _dream_transcript(self) -> str:
+        if not self._is_idle():
+            return ""
+        return self.backend.transcript_text()
+
+    def dream_status(self) -> dict[str, Any]:
+        return self.dreams.status()
+
+    def dream_now(self) -> DreamResult:
+        return self.dreams.run_once(reason="manual", force=True)
+
     def shutdown(self) -> None:
         """Tear down the shell session and any background processes."""
+        try:
+            self.dreams.stop()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.shell.kill()
         except Exception:  # noqa: BLE001
@@ -212,30 +259,31 @@ class Agent:
     # -- main turn ---------------------------------------------------------
 
     def run_turn(self, user_input: str) -> str:
-        self._maybe_compact()
-        recalled = self.knowledge.recall(
-            user_input, k=self.config.recall_k, kinds=("fact", "procedure")
-        )
-        self._turn_memory = ""
-        if recalled:
-            ui.render_recall(self.console, len(recalled))
-            self._turn_memory = "\n".join(f"- {e.text}" for e in recalled)
-
-        auto_crew = self._should_auto_crew(user_input)
-
-        if recalled and self.config.inject_recalled_memory:
-            self.backend.add_user(f"<memory>\n{self._turn_memory}\n</memory>\n\n{user_input}")
-        else:
-            self.backend.add_user(user_input)
-        try:
-            if auto_crew:
-                text, tools_used = self._auto_crew_turn(user_input), ["crew"]
-            else:
-                text, tools_used = self._agent_loop()
-        finally:
+        with self._active_work():
+            self._maybe_compact()
+            recalled = self.knowledge.recall(
+                user_input, k=self.config.recall_k, kinds=("fact", "procedure")
+            )
             self._turn_memory = ""
-        self._reflect(user_input, [text] if text else [], tools_used)
-        return text
+            if recalled:
+                ui.render_recall(self.console, len(recalled))
+                self._turn_memory = "\n".join(f"- {e.text}" for e in recalled)
+
+            auto_crew = self._should_auto_crew(user_input)
+
+            if recalled and self.config.inject_recalled_memory:
+                self.backend.add_user(f"<memory>\n{self._turn_memory}\n</memory>\n\n{user_input}")
+            else:
+                self.backend.add_user(user_input)
+            try:
+                if auto_crew:
+                    text, tools_used = self._auto_crew_turn(user_input), ["crew"]
+                else:
+                    text, tools_used = self._agent_loop()
+            finally:
+                self._turn_memory = ""
+            self._reflect(user_input, [text] if text else [], tools_used)
+            return text
 
     def _turn_system(self) -> str:
         """System prompt for the active turn, plus any recalled knowledge."""
@@ -313,45 +361,47 @@ class Agent:
     def run_goal(self, goal: str, max_rounds: int = 10) -> None:
         """Work autonomously toward a goal: act, self-verify, and keep going
         across rounds until the goal is achieved, blocked, or rounds run out."""
-        ui.render_goal_header(self.console, goal)
-        recalled = self.knowledge.recall(goal, k=self.config.recall_k, kinds=("fact", "procedure"))
-        self._turn_memory = ""
-        if recalled:
-            ui.render_recall(self.console, len(recalled))
-            self._turn_memory = "\n".join(f"- {e.text}" for e in recalled)
-        message = _GOAL_DIRECTIVE.format(goal=goal)
-        all_tools: list[str] = []
-        outcome = "incomplete"
+        with self._active_work():
+            ui.render_goal_header(self.console, goal)
+            recalled = self.knowledge.recall(goal, k=self.config.recall_k, kinds=("fact", "procedure"))
+            self._turn_memory = ""
+            if recalled:
+                ui.render_recall(self.console, len(recalled))
+                self._turn_memory = "\n".join(f"- {e.text}" for e in recalled)
+            message = _GOAL_DIRECTIVE.format(goal=goal)
+            all_tools: list[str] = []
+            outcome = "incomplete"
 
-        for rnd in range(1, max_rounds + 1):
-            ui.render_round(self.console, rnd, max_rounds)
-            self._maybe_compact()
-            self.backend.add_user(message)
-            text, used = self._agent_loop()
-            all_tools += used
-            upper = text.upper()
-            if "<<GOAL_ACHIEVED>>" in upper:
-                outcome = "achieved"
-                break
-            if "<<BLOCKED>>" in upper:
-                outcome = "blocked"
-                break
-            message = (
-                "You have NOT emitted <<GOAL_ACHIEVED>> yet. Verify what remains for the "
-                f"goal — '{goal}' — then keep working until it is fully done and verified "
-                "(run it or its tests). Emit <<GOAL_ACHIEVED>> when truly complete, or "
-                "<<BLOCKED>> with a reason if you cannot proceed without the user."
-            )
-        self._turn_memory = ""
-        ui.render_goal_result(self.console, outcome)
-        self._reflect(f"[goal] {goal}", [], all_tools)
+            for rnd in range(1, max_rounds + 1):
+                ui.render_round(self.console, rnd, max_rounds)
+                self._maybe_compact()
+                self.backend.add_user(message)
+                text, used = self._agent_loop()
+                all_tools += used
+                upper = text.upper()
+                if "<<GOAL_ACHIEVED>>" in upper:
+                    outcome = "achieved"
+                    break
+                if "<<BLOCKED>>" in upper:
+                    outcome = "blocked"
+                    break
+                message = (
+                    "You have NOT emitted <<GOAL_ACHIEVED>> yet. Verify what remains for the "
+                    f"goal — '{goal}' — then keep working until it is fully done and verified "
+                    "(run it or its tests). Emit <<GOAL_ACHIEVED>> when truly complete, or "
+                    "<<BLOCKED>> with a reason if you cannot proceed without the user."
+                )
+            self._turn_memory = ""
+            ui.render_goal_result(self.console, outcome)
+            self._reflect(f"[goal] {goal}", [], all_tools)
 
     def run_crew(self, goal: str) -> None:
         """Explicitly launch a crew of parallel specialist sub-agents for a goal
         and show the live dashboard (the `/crew` command). The coordinator plans
         the specialists; their synthesized report is printed when they finish."""
-        report = self._run_crew(goal, [], mode="auto", max_steps=10)
-        ui.render_answer(self.console, report)
+        with self._active_work():
+            report = self._run_crew(goal, [], mode="auto", max_steps=10)
+            ui.render_answer(self.console, report)
 
     # -- tool execution ----------------------------------------------------
 

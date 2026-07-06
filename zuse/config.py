@@ -44,6 +44,8 @@ SESSIONS_DIR = CONFIG_DIR / "sessions"
 MEMORY_FILE = CONFIG_DIR / "memory.md"
 KNOWLEDGE_FILE = CONFIG_DIR / "knowledge.jsonl"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+DREAMS_FILE = CONFIG_DIR / "dreams.jsonl"
+IMPROVEMENTS_FILE = CONFIG_DIR / "improvements.md"
 
 
 def ensure_dirs() -> None:
@@ -109,6 +111,11 @@ class Config:
     crew_planner: bool = True        # let a coordinator agent decompose goals into specialists
     auto_crew: bool = True           # auto-route substantial tasks to a crew (no /crew needed)
     show_actions: bool = True        # show tool calls/output + live stream; off = only agent progress
+    dream_enabled: bool = True       # background idle reflection + memory maintenance
+    dream_interval_minutes: int = 45
+    dream_idle_delay_seconds: int = 120
+    dream_recent_sessions: int = 5
+    dream_model_reflection: bool = True  # call a low-effort model for dream insights
 
     @property
     def is_local(self) -> bool:

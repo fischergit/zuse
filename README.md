@@ -115,6 +115,7 @@ zuse --local -m qwen2.5-coder --yolo "run the test suite and fix failures"
 - **Browser automation** — real Chromium automation for JS-rendered sites.
 - **MCP support** — connect external Model Context Protocol servers through `~/.zuse/mcp.json`.
 - **Continuous learning** — stores durable preferences, facts and procedures in `~/.zuse/knowledge.jsonl`.
+- **Background dreaming** — when idle, reflects on recent sessions, cleans memory and records improvement ideas.
 - **Sub-agents and crews** — delegate isolated subtasks or coordinate planner/researcher/tester/reviewer mini-teams.
 - **Cost visibility** — `/cost` shows token usage and estimated spend.
 - **Multiple interfaces** — terminal, WebGUI, native GUI, WhatsApp and Telegram.
@@ -156,6 +157,7 @@ zuse --no-thinking      # faster local responses on small models
 | `/effort <level>` | Set reasoning effort |
 | `/thinking` | Toggle visible reasoning |
 | `/learning` | Toggle continuous learning |
+| `/dream [status|now|on|off|interval <min>]` | Background reflection and improvement backlog |
 | `/auto` | Toggle autonomous approvals |
 | `/yolo` | Auto-approve tool permissions |
 | `/tools` | List available tools |
@@ -238,6 +240,29 @@ It can remember preferences, project facts and reusable procedures. Relevant mem
 
 ```bash
 zuse --no-learning
+```
+
+Zuse can also "dream" while it is idle: it periodically compacts learned memory,
+reflects on recent saved sessions and writes safe improvement ideas to:
+
+```text
+~/.zuse/dreams.jsonl
+~/.zuse/improvements.md
+```
+
+Control it in the REPL:
+
+```text
+/dream status
+/dream now
+/dream off
+/dream interval 30
+```
+
+For one-off maintenance without entering the REPL:
+
+```bash
+zuse --dream-now
 ```
 
 Inspect or clear memory in the REPL:

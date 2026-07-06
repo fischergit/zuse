@@ -39,6 +39,7 @@ SLASH_HELP = [
     ("/thinking", "Toggle visible thinking"),
     ("/quiet", "Toggle quiet mode: hide tool activity, show only agent progress"),
     ("/learning", "Toggle continuous learning (reflection after each turn)"),
+    ("/dream [status|now|on|off|interval <min>]", "Background dreaming and improvement backlog"),
     ("/auto", "Toggle auto mode: act autonomously + auto-approve actions"),
     ("/yolo", "Toggle auto-approve for all tool permissions"),
     ("/tools", "List available tools"),
@@ -208,6 +209,47 @@ def _run_selftest(agent: Agent, console: Console) -> bool:
     return passed == len(rows)
 
 
+def _print_dream_status(agent: Agent, console: Console) -> None:
+    status = agent.dream_status()
+    state = "on" if status["enabled"] else "off"
+    running = "running" if status["running"] else "stopped"
+    active = "active" if status["active"] else "idle"
+    console.print(
+        f"Dreaming: [bold]{state}[/] · {running} · {active} · "
+        f"every {status['interval_minutes']} min"
+    )
+    if status["last_summary"]:
+        console.print(f"Last dream: {status['last_summary']}")
+        console.print(
+            f"  learned {status['last_learned']} · "
+            f"improvements {status['last_improvements']} · {status['last_finished'] or '?'}"
+        )
+    if status["last_error"]:
+        console.print(f"[red]Last error:[/] {status['last_error']}")
+    console.print(f"[dim]dreams:[/] {status['dreams_file']}")
+    console.print(f"[dim]backlog:[/] {status['improvements_file']}")
+
+
+def _print_dream_result(result, console: Console) -> None:
+    if result.skipped:
+        console.print(f"[yellow]Dream skipped:[/] {result.skipped}")
+        return
+    if result.error:
+        console.print(f"[red]Dream failed:[/] {result.error}")
+        return
+    console.print(f"[#34D399]Dream complete:[/] {result.summary}")
+    if result.maintenance:
+        console.print(
+            f"  memory compacted {result.maintenance.get('compacted', 0)} · "
+            f"deduped {result.maintenance.get('deduped', 0)}"
+        )
+    if result.learned:
+        for kind, text in result.learned:
+            console.print(f"  learned [{kind}]: {text}")
+    if result.improvements:
+        console.print(f"  improvement ideas: {len(result.improvements)}")
+
+
 def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
     """Return True to keep the REPL running, False to exit."""
     parts = cmd.strip().split(maxsplit=1)
@@ -303,6 +345,37 @@ def _handle_slash(cmd: str, agent: Agent, console: Console) -> bool:
     elif name == "/learning":
         cfg.learning = not cfg.learning
         console.print(f"Continuous learning: {'on' if cfg.learning else 'off'}")
+    elif name == "/dream":
+        words = arg.split()
+        action = words[0].lower() if words else "status"
+        if action in {"status", "show"}:
+            _print_dream_status(agent, console)
+        elif action == "on":
+            cfg.dream_enabled = True
+            cfg.save()
+            agent.dreams.start()
+            console.print("[#34D399]Dreaming on[/] — Zuse reflects in the background while idle.")
+        elif action == "off":
+            cfg.dream_enabled = False
+            cfg.save()
+            agent.dreams.stop()
+            console.print("Dreaming off")
+        elif action == "now":
+            _print_dream_result(agent.dream_now(), console)
+        elif action == "interval" and len(words) >= 2:
+            try:
+                minutes = max(1, int(words[1]))
+            except ValueError:
+                console.print("Usage: /dream interval <minutes>")
+            else:
+                cfg.dream_interval_minutes = minutes
+                cfg.save()
+                if cfg.dream_enabled:
+                    agent.dreams.stop()
+                    agent.dreams.start()
+                console.print(f"Dream interval set to {minutes} min.")
+        else:
+            console.print("Usage: /dream [status|now|on|off|interval <minutes>]")
     elif name == "/auto":
         cfg.auto = not cfg.auto
         agent.permissions.yolo = cfg.yolo or cfg.auto
@@ -616,6 +689,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--browser-window", action="store_true",
                    help="Show a visible browser window (default: headless).")
     p.add_argument("--no-learning", action="store_true", help="Disable continuous learning.")
+    p.add_argument("--no-dream", action="store_true", help="Disable background dreaming for this run.")
+    p.add_argument("--dream-now", action="store_true",
+                   help="Run one dream/maintenance cycle, print the result, then exit.")
     p.add_argument("--embed-model", help="Ollama embedding model for semantic recall (optional).")
     p.add_argument("-v", "--version", action="version", version=f"zuse {__version__}")
     return p
@@ -648,6 +724,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg.browser_headless = False
     if args.no_learning:
         cfg.learning = False
+    if args.no_dream:
+        cfg.dream_enabled = False
     if args.embed_model:
         cfg.embed_model = args.embed_model
     if args.openai_base_url:
@@ -733,6 +811,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     agent = Agent(factory, cfg, console)
+
+    if args.dream_now:
+        _print_dream_result(agent.dream_now(), console)
+        agent.shutdown()
+        return 0
 
     if args.prompt:
         prompt = " ".join(args.prompt)

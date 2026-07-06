@@ -823,6 +823,7 @@ class WebState:
                 "error": self.init_error,
                 "provider": agent.config.provider if agent else "",
                 "model": agent.config.active_model if agent else "",
+                "dream": agent.dream_status() if agent else {},
             }
             data["codex_rate_limit"] = self.codex_rate_limit()
             return data
@@ -918,6 +919,8 @@ def build_agent(args: argparse.Namespace, console: Console) -> Agent:
         cfg.openai_base_url = args.openai_base_url
     if args.no_learning:
         cfg.learning = False
+    if args.no_dream:
+        cfg.dream_enabled = False
     if args.no_web:
         cfg.enable_web = False
     if args.browser_window:
@@ -1073,6 +1076,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-thinking", action="store_true")
     p.add_argument("--no-web", action="store_true")
     p.add_argument("--no-learning", action="store_true")
+    p.add_argument("--no-dream", action="store_true")
     p.add_argument("--no-markdown", action="store_true")
     p.add_argument("--browser-window", action="store_true")
     p.add_argument("-v", "--version", action="version", version=f"zuse-web {__version__}")
